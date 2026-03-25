@@ -1,0 +1,18 @@
+[package]
+name = "github-ntfy-agent"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+
+[dependencies]
+anyhow = "1.0.98"
+clap = { version = "4.5.37", features = ["derive"] }
+directories = "6.0.0"
+reqwest = { version = "0.12.15", default-features = false, features = ["charset", "http2", "json", "rustls-tls"] }
+serde = { version = "1.0.219", features = ["derive"] }
+serde_json = "1.0.140"
+tokio = { version = "1.44.2", features = ["macros", "rt-multi-thread", "signal", "time"] }
+toml = "0.8.20"
+tracing = "0.1.41"
+tracing-subscriber = { version = "0.3.19", features = ["env-filter", "fmt"] }
+wildmatch = "2.5.0"

@@ -1,0 +1,30 @@
+[github]
+token = "ghp_replace_me"
+# api_base = "https://api.github.com"
+# participating = false
+# per_page = 100
+# enrich_pull_requests = true
+
+[ntfy]
+publish_url = "http://100.127.86.108:8080/github"
+# token = "tk_replace_me"
+# timeout_secs = 5
+
+[app]
+# poll_interval_secs = 60
+# max_seen = 2000
+# log_level = "info"
+# state_path = "/var/lib/github-ntfy-agent/state.json"
+
+[filters]
+
+# [[filters.block]]
+# name = "ignore example-org bot noise"
+# repo = "example-org/*"
+# actor_is_bot = true
+
+# [[filters.block]]
+# name = "ignore release label churn"
+# owner = "octo-org"
+# subject_type = "Issue"
+# activity = "labeled"
