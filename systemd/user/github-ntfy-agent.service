@@ -1,0 +1,15 @@
+[Unit]
+Description=GitHub ntfy forwarding agent (user)
+After=network-online.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/github-ntfy-agent run --config %h/.config/github-ntfy-agent/config.toml
+Restart=on-failure
+RestartSec=5s
+NoNewPrivileges=yes
+PrivateTmp=yes
+UMask=0077
+
+[Install]
+WantedBy=default.target

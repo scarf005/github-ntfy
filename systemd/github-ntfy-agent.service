@@ -1,0 +1,21 @@
+[Unit]
+Description=GitHub ntfy forwarding agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=github-ntfy
+Group=github-ntfy
+ExecStart=/usr/local/bin/github-ntfy-agent run --config /etc/github-ntfy-agent/config.toml
+Restart=on-failure
+RestartSec=5s
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/github-ntfy-agent /etc/github-ntfy-agent
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

@@ -1,70 +1,82 @@
 # github-ntfy
 
-Tiny Linux-only GitHub notification forwarder for `ntfy`.
+Self-hosted GitHub notification forwarder for `ntfy`.
 
-It runs from `systemd` timer, polls GitHub notifications with `gh api /notifications` every minute by default, deduplicates by notification thread and update time, and publishes to `ntfy` with the repository owner's GitHub avatar plus a `Click` header so tapping the Android notification opens the relevant GitHub page. Pull request notifications also use the latest timeline activity GitHub exposes to enrich the title and description.
+- Shell version: `bin/github-ntfy` via `systemd` timer
+- Rust version: `github-ntfy-agent` as a long-running service
+- PR and issue titles are enriched from GitHub timeline activity
+- Rust config supports block rules such as repo/org/bot filters
 
-## Requirements
+## Why
 
-- Linux with `systemd`
-- `bash`
-- `gh`
-- `jq`
-- `curl`
+- GitHub mobile notifications are noisy and low-context
+- `ntfy` gives better routing, priority, filtering, and self-hosting
 
-## Setup
-
-1. Create a classic GitHub personal access token.
-2. Copy `github-ntfy.env.example` to `/etc/github-ntfy.env`
-3. Fill in `NTFY_URL` and optionally `GH_TOKEN`
-4. Run `sudo ./install.sh`
-5. Enable the timer:
+## Shell quick start
 
 ```bash
+sudo ./install.sh
 sudo systemctl enable --now github-ntfy.timer
-```
-
-6. Check logs:
-
-```bash
 journalctl -u github-ntfy.service -f
 ```
 
-## Config
+Config: `/etc/github-ntfy.env`
 
-`/etc/github-ntfy.env`
+- `GH_TOKEN`: classic PAT, or use existing `gh auth`
+- `NTFY_URL`: publish endpoint such as `http://host:8080/github`
 
-- `GH_TOKEN`: optional classic PAT used by `gh api`; if omitted, existing `gh auth` login is used
-- `NTFY_URL`: full publish URL, for example `http://100.127.86.108:8080/github`
-- `NTFY_TOKEN`: optional bearer token for private `ntfy`
-- `PARTICIPATING`: optional, `true` to limit to participating notifications
-- `PER_PAGE`: optional, default `100`
-- `MAX_PAGES`: optional, default `10`
-- `STATE_DIR`: optional, default `/var/lib/github-ntfy`
-- `NTFY_TIMEOUT`: optional, default `5`
-
-## Manual run
+## Rust quick start
 
 ```bash
-sudo systemctl start github-ntfy.service
+cargo run -- check --config ./config.example.toml
+cargo run -- once --config ./config.example.toml
+cargo run -- run --config ./config.example.toml
 ```
 
-Or directly:
+`github.token` is optional if `gh auth` is already logged in.
+
+Linux install:
 
 ```bash
-sudo GH_TOKEN=... NTFY_URL=http://100.127.86.108:8080/github ./bin/github-ntfy poll
+./install-rust-agent.sh
+systemctl --user enable --now github-ntfy-agent.service
 ```
 
-## How links work
+System service:
 
-The script converts GitHub API subject URLs into GitHub web URLs and sends them as the `Click` header. On Android, tapping the `ntfy` notification opens that GitHub page.
+```bash
+sudo systemctl enable --now github-ntfy-agent.service
+```
 
-Current mappings cover:
+## Rust filter rules
 
-- issues
-- pull requests
-- commits
-- discussions
-- releases
+```toml
+[filters]
 
-Unknown notification types fall back to the repository page.
+[[filters.block]]
+name = "ignore example-org bots"
+repo = "example-org/*"
+actor_is_bot = true
+
+[[filters.block]]
+name = "ignore issue label churn"
+owner = "example-org"
+subject_type = "Issue"
+activity = "labeled"
+```
+
+Supported fields:
+
+- `repo`
+- `owner`
+- `actor`
+- `actor_is_bot`
+- `reason`
+- `subject_type`
+- `activity`
+
+## Notes
+
+- Notifications API can use the current `gh auth` session too; classic PAT is still the easiest portable setup
+- Android tap uses `Click` so the relevant GitHub page opens directly
+- Unknown notification types fall back to the repository page
