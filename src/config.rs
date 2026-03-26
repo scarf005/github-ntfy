@@ -1,9 +1,8 @@
-use std::fs;
-use std::path::{Path, PathBuf};
-
 use anyhow::{Context, Result, bail};
 use directories::ProjectDirs;
 use serde::Deserialize;
+use std::fs;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct Config {
@@ -127,15 +126,12 @@ fn resolve_state_path(config: &Config, config_path: &Path) -> Result<PathBuf> {
         return Ok(path.clone());
     }
 
-    if let Some(parent) = config_path.parent() {
-        if parent
-            .file_name()
-            .is_some_and(|name| name == "github-ntfy-agent")
-        {
-            return Ok(parent.join("state.json"));
-        }
-    }
+    let _ = config_path;
 
+    default_state_path()
+}
+
+pub fn default_state_path() -> Result<PathBuf> {
     let project_dirs = project_dirs()?;
     let state_dir = project_dirs
         .state_dir()
@@ -190,4 +186,107 @@ fn default_max_seen() -> usize {
 
 fn default_log_level() -> String {
     String::from("info")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn unique_test_path(name: &str) -> PathBuf {
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("time")
+            .as_nanos();
+        std::env::temp_dir().join(format!("github-ntfy-agent-{name}-{suffix}"))
+    }
+
+    fn write_config(path: &Path, body: &str) {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).expect("create config dir");
+        }
+        fs::write(path, body).expect("write config");
+    }
+
+    #[test]
+    fn defaults_state_path_to_platform_state_dir() {
+        let config_path = unique_test_path("config").join("config.toml");
+        write_config(
+            &config_path,
+            r#"
+[github]
+token = "ghp_test"
+
+[ntfy]
+publish_url = "https://ntfy.example/github"
+"#,
+        );
+
+        let loaded = LoadedConfig::load(Some(config_path.clone())).expect("loaded");
+
+        assert_eq!(
+            loaded.state_path,
+            default_state_path().expect("default state path")
+        );
+        assert_ne!(
+            loaded.state_path,
+            config_path.parent().expect("parent").join("state.json")
+        );
+
+        fs::remove_dir_all(config_path.parent().expect("parent")).expect("cleanup");
+    }
+
+    #[test]
+    fn honors_explicit_state_path() {
+        let root = unique_test_path("explicit-state");
+        let config_path = root.join("config.toml");
+        let expected_state_path = root.join("custom-state.json");
+        write_config(
+            &config_path,
+            &format!(
+                r#"
+[github]
+token = "ghp_test"
+
+[ntfy]
+publish_url = "https://ntfy.example/github"
+
+[app]
+state_path = "{}"
+"#,
+                expected_state_path.display()
+            ),
+        );
+
+        let loaded = LoadedConfig::load(Some(config_path.clone())).expect("loaded");
+
+        assert_eq!(loaded.state_path, expected_state_path);
+
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn rejects_empty_ntfy_publish_url() {
+        let root = unique_test_path("invalid-publish-url");
+        let config_path = root.join("config.toml");
+        write_config(
+            &config_path,
+            r#"
+[github]
+token = "ghp_test"
+
+[ntfy]
+publish_url = ""
+"#,
+        );
+
+        let error = LoadedConfig::load(Some(config_path.clone())).expect_err("load should fail");
+
+        assert!(
+            error
+                .to_string()
+                .contains("ntfy.publish_url must not be empty")
+        );
+
+        fs::remove_dir_all(root).expect("cleanup");
+    }
 }

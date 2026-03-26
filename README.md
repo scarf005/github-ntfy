@@ -2,7 +2,6 @@
 
 Self-hosted GitHub notification forwarder for `ntfy`.
 
-- Shell version: `bin/github-ntfy` via `systemd` timer
 - Rust version: `github-ntfy-agent` as a long-running service
 - PR and issue titles are enriched from GitHub timeline activity
 - Rust config supports block rules such as repo/org/bot filters
@@ -12,20 +11,7 @@ Self-hosted GitHub notification forwarder for `ntfy`.
 - GitHub mobile notifications are noisy and low-context
 - `ntfy` gives better routing, priority, filtering, and self-hosting
 
-## Shell quick start
-
-```bash
-sudo ./install.sh
-sudo systemctl enable --now github-ntfy.timer
-journalctl -u github-ntfy.service -f
-```
-
-Config: `/etc/github-ntfy.env`
-
-- `GH_TOKEN`: classic PAT, or use existing `gh auth`
-- `NTFY_URL`: publish endpoint such as `http://host:8080/github`
-
-## Rust quick start
+## Quick start
 
 ```bash
 cargo run -- check --config ./config.example.toml
@@ -34,6 +20,12 @@ cargo run -- run --config ./config.example.toml
 ```
 
 `github.token` is optional if `gh auth` is already logged in.
+
+Config:
+
+- user install: `~/.config/github-ntfy-agent/config.toml`
+- system install: `/etc/github-ntfy-agent/config.toml`
+- state file defaults to the platform state directory unless `app.state_path` is set
 
 Linux install:
 
@@ -48,7 +40,7 @@ System service:
 sudo systemctl enable --now github-ntfy-agent.service
 ```
 
-## Rust filter rules
+## Filter rules
 
 ```toml
 [filters]

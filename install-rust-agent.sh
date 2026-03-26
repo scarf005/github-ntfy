@@ -12,6 +12,7 @@ install_system() {
   local config_dir="/etc/${APP_NAME}"
   local config_dst="${config_dir}/config.toml"
   local service_dst="/etc/systemd/system/${APP_NAME}.service"
+  local state_dir="/var/lib/${APP_NAME}"
 
   install -d -m 0755 /usr/local/bin
   install -m 0755 "target/release/${APP_NAME}" "$bin_dst"
@@ -24,7 +25,8 @@ install_system() {
     useradd --system --gid github-ntfy --home-dir /var/lib/${APP_NAME} --create-home --shell /usr/sbin/nologin github-ntfy
   fi
 
-  install -d -m 0750 -o github-ntfy -g github-ntfy "/var/lib/${APP_NAME}"
+  install -d -m 0750 -o github-ntfy -g github-ntfy "$state_dir"
+  install -d -m 0750 -o github-ntfy -g github-ntfy "$state_dir/.local/state/${APP_NAME}"
   install -d -m 0755 "$config_dir"
 
   if [[ ! -f "$config_dst" ]]; then

@@ -34,29 +34,9 @@ impl NtfyClient {
     }
 
     pub async fn send(&self, notification: &RenderedNotification) -> Result<()> {
-        let mut headers = HeaderMap::new();
-        headers.insert(TITLE_HEADER, HeaderValue::from_str(&notification.title)?);
-        headers.insert(
-            CLICK_HEADER,
-            HeaderValue::from_str(&notification.click_url)?,
-        );
-        headers.insert(ICON_HEADER, HeaderValue::from_str(&notification.icon_url)?);
-        headers.insert(TAGS_HEADER, HeaderValue::from_str(&notification.tags)?);
-        headers.insert(
-            PRIORITY_HEADER,
-            HeaderValue::from_str(&notification.priority.to_string())?,
-        );
-
-        if let Some(token) = &self.token {
-            headers.insert(
-                AUTHORIZATION,
-                HeaderValue::from_str(&format!("Bearer {token}"))?,
-            );
-        }
-
         self.client
             .post(self.publish_url.clone())
-            .headers(headers)
+            .headers(build_headers(notification, self.token.as_deref())?)
             .body(notification.message.clone())
             .send()
             .await
@@ -87,5 +67,66 @@ impl NtfyClient {
             .error_for_status()
             .context("ntfy endpoint returned an error")?;
         Ok(())
+    }
+}
+
+fn build_headers(notification: &RenderedNotification, token: Option<&str>) -> Result<HeaderMap> {
+    let mut headers = HeaderMap::new();
+    headers.insert(TITLE_HEADER, HeaderValue::from_str(&notification.title)?);
+    headers.insert(
+        CLICK_HEADER,
+        HeaderValue::from_str(&notification.click_url)?,
+    );
+    headers.insert(ICON_HEADER, HeaderValue::from_str(&notification.icon_url)?);
+    headers.insert(TAGS_HEADER, HeaderValue::from_str(&notification.tags)?);
+    headers.insert(
+        PRIORITY_HEADER,
+        HeaderValue::from_str(&notification.priority.to_string())?,
+    );
+
+    if let Some(token) = token {
+        headers.insert(
+            AUTHORIZATION,
+            HeaderValue::from_str(&format!("Bearer {token}"))?,
+        );
+    }
+
+    Ok(headers)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample_notification() -> RenderedNotification {
+        RenderedNotification {
+            dedupe_key: String::from("1|now"),
+            title: String::from("Title"),
+            message: String::from("Body"),
+            click_url: String::from("https://github.com/octo/repo/pull/1"),
+            icon_url: String::from("https://avatars.githubusercontent.com/u/1?v=4"),
+            tags: String::from("github,pr"),
+            priority: 4,
+        }
+    }
+
+    #[test]
+    fn builds_ntfy_headers_without_auth_when_token_missing() {
+        let headers = build_headers(&sample_notification(), None).expect("headers");
+
+        assert_eq!(headers.get(TITLE_HEADER).expect("title"), "Title");
+        assert_eq!(headers.get(TAGS_HEADER).expect("tags"), "github,pr");
+        assert!(headers.get(AUTHORIZATION).is_none());
+    }
+
+    #[test]
+    fn builds_ntfy_headers_with_bearer_token() {
+        let headers = build_headers(&sample_notification(), Some("secret")).expect("headers");
+
+        assert_eq!(
+            headers.get(AUTHORIZATION).expect("authorization"),
+            "Bearer secret"
+        );
+        assert_eq!(headers.get(PRIORITY_HEADER).expect("priority"), "4");
     }
 }
