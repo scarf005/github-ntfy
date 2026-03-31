@@ -16,6 +16,12 @@ publish_url = "http://100.127.86.108:8080/github"
 # log_level = "info"
 # state_path = "/var/lib/github-ntfy-agent/state.json"
 
+[actions]
+# enabled = true
+# listen_addr = "0.0.0.0:8787"
+# public_base_url = "http://100.127.86.108:8787"
+# token = "replace-with-random-shared-secret"
+
 [filters]
 
 # [[filters.block]]
@@ -28,3 +34,9 @@ publish_url = "http://100.127.86.108:8080/github"
 # owner = "octo-org"
 # subject_type = "Issue"
 # activity = "labeled"
+
+# [[filters.block]]
+# name = "ignore org sync pull requests"
+# owner = "example-org"
+# subject_type = "PullRequest"
+# title = "sync:*"

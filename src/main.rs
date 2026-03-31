@@ -1,15 +1,6 @@
-mod app;
-mod config;
-mod filter;
-mod github;
-mod ntfy;
-mod render;
-mod state;
-
 use anyhow::{Context, Result};
-use app::App;
 use clap::{Parser, Subcommand};
-use config::LoadedConfig;
+use github_ntfy_agent::{App, LoadedConfig};
 use std::path::PathBuf;
 use tracing_subscriber::EnvFilter;
 
