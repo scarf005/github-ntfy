@@ -8,8 +8,10 @@ const DEFAULT_ICON_URL: &str =
 #[derive(Debug, Clone)]
 pub struct RenderedNotification {
     pub dedupe_key: String,
+    pub sequence_id: String,
     pub title: String,
     pub message: String,
+    pub actions: Option<String>,
     pub click_url: String,
     pub icon_url: String,
     pub tags: String,
@@ -26,12 +28,7 @@ pub fn render_notification(
         .title
         .clone()
         .unwrap_or_else(|| thread.repository.full_name.clone());
-    let base_message = format!(
-        "{} [{}] {}",
-        thread.repository.full_name,
-        thread.reason.as_deref().unwrap_or("notification"),
-        thread.subject.kind.as_deref().unwrap_or("Notification")
-    );
+    let base_message = base_message(thread);
     let click_url = click_url(thread);
     let icon_url = thread
         .repository
@@ -53,8 +50,10 @@ pub fn render_notification(
 
     Ok(RenderedNotification {
         dedupe_key: format!("{}|{}", thread.id, thread.updated_at),
+        sequence_id: format!("github-thread-{}", thread.id),
         title,
         message,
+        actions: None,
         click_url,
         icon_url,
         tags,
@@ -81,7 +80,7 @@ fn enrich_pull_request(
     let is_merged = pull_request.is_some_and(|pull| pull.merged);
     let actor = merged_by.unwrap_or_else(|| activity.actor.clone());
 
-    let title = match activity.kind.as_str() {
+    let summary = match activity.kind.as_str() {
         "review_approved" => format!("@{} approved {}", actor, base_title),
         "review_changes_requested" => format!("@{} requested changes on {}", actor, base_title),
         "reviewed" => format!("@{} reviewed {}", actor, base_title),
@@ -108,13 +107,12 @@ fn enrich_pull_request(
         _ => String::from(base_title),
     };
 
-    let message = if let Some(detail) = activity.detail.filter(|detail| !detail.trim().is_empty()) {
-        format!("{}\n{}", trim_multiline_text(&detail), base_message)
-    } else {
-        String::from(base_message)
-    };
+    let message = prepend_summary(
+        &summary,
+        &detail_message(base_message, activity.detail.as_deref()),
+    );
 
-    (title, message)
+    (String::from(base_title), message)
 }
 
 fn enrich_issue(
@@ -130,7 +128,7 @@ fn enrich_issue(
         return (String::from(base_title), String::from(base_message));
     };
 
-    let title = match activity.kind.as_str() {
+    let summary = match activity.kind.as_str() {
         "commented" if reason == "mention" || reason == "team_mention" => {
             format!("@{} mentioned you in {}", activity.actor, base_title)
         }
@@ -144,13 +142,85 @@ fn enrich_issue(
         _ => String::from(base_title),
     };
 
-    let message = if let Some(detail) = activity.detail.filter(|detail| !detail.trim().is_empty()) {
-        format!("{}\n{}", trim_multiline_text(&detail), base_message)
+    let message = prepend_summary(
+        &summary,
+        &detail_message(base_message, activity.detail.as_deref()),
+    );
+
+    (String::from(base_title), message)
+}
+
+fn prepend_summary(summary: &str, message: &str) -> String {
+    if summary.trim().is_empty() {
+        return String::from(message);
+    }
+
+    format!("{}\n{}", summary, message)
+}
+
+fn detail_message(base_message: &str, detail: Option<&str>) -> String {
+    if let Some(detail) = detail.filter(|detail| !detail.trim().is_empty()) {
+        format!("{}\n{}", trim_multiline_text(detail), base_message)
     } else {
         String::from(base_message)
-    };
+    }
+}
 
-    (title, message)
+fn base_message(thread: &Thread) -> String {
+    let repo = &thread.repository.full_name;
+    let subject = subject_label(thread.subject.kind.as_deref());
+
+    match thread.reason.as_deref() {
+        Some("assign") => format!("{subject} assigned to you in {repo}"),
+        Some("author") => format!(
+            "Activity on your {subject_lower} in {repo}",
+            subject_lower = subject.to_ascii_lowercase()
+        ),
+        Some("comment") => format!(
+            "New comment on {subject_lower} in {repo}",
+            subject_lower = subject.to_ascii_lowercase()
+        ),
+        Some("ci_activity") => format!(
+            "CI activity on {subject_lower} in {repo}",
+            subject_lower = subject.to_ascii_lowercase()
+        ),
+        Some("invitation") => format!(
+            "Invitation for {subject_lower} in {repo}",
+            subject_lower = subject.to_ascii_lowercase()
+        ),
+        Some("manual") => format!(
+            "Manual notification for {subject_lower} in {repo}",
+            subject_lower = subject.to_ascii_lowercase()
+        ),
+        Some("mention") => format!(
+            "Mentioned you in {subject_lower} in {repo}",
+            subject_lower = subject.to_ascii_lowercase()
+        ),
+        Some("review_requested") => format!(
+            "Review requested on {subject_lower} in {repo}",
+            subject_lower = subject.to_ascii_lowercase()
+        ),
+        Some("security_alert") => format!("Security alert in {repo}"),
+        Some("state_change") => format!("{subject} state changed in {repo}"),
+        Some("subscribed") => format!("{subject} update in {repo}"),
+        Some("team_mention") => format!(
+            "Mentioned your team in {subject_lower} in {repo}",
+            subject_lower = subject.to_ascii_lowercase()
+        ),
+        Some(reason) => format!("{subject} notification ({reason}) in {repo}"),
+        None => format!("{subject} notification in {repo}"),
+    }
+}
+
+fn subject_label(kind: Option<&str>) -> &'static str {
+    match kind {
+        Some("PullRequest") => "Pull request",
+        Some("Issue") => "Issue",
+        Some("Commit") => "Commit",
+        Some("Discussion") => "Discussion",
+        Some("Release") => "Release",
+        _ => "Notification",
+    }
 }
 
 fn trim_multiline_text(input: &str) -> String {
@@ -274,6 +344,8 @@ mod tests {
     fn renders_pull_url_from_api_url() {
         let rendered = render_notification(&sample_thread(), None, None).expect("rendered");
         assert_eq!(rendered.click_url, "https://github.com/octo/repo/pull/42");
+        assert_eq!(rendered.sequence_id, "github-thread-1");
+        assert_eq!(rendered.message, "Pull request update in octo/repo");
     }
 
     #[test]
@@ -304,7 +376,12 @@ mod tests {
         }];
 
         let rendered = render_notification(&thread, None, Some(&timeline)).expect("rendered");
-        assert_eq!(rendered.title, "@foo pushed 1 commit to Fix pull link");
+        assert_eq!(rendered.title, "Fix pull link");
+        assert!(
+            rendered
+                .message
+                .starts_with("@foo pushed 1 commit to Fix pull link\n")
+        );
         assert!(rendered.message.contains("feat: improve notifier"));
     }
 
@@ -337,8 +414,18 @@ mod tests {
         }];
 
         let rendered = render_notification(&thread, None, Some(&timeline)).expect("rendered");
-        assert_eq!(rendered.title, "@bar mentioned you in Issue title");
+        assert_eq!(rendered.title, "Issue title");
+        assert!(
+            rendered
+                .message
+                .starts_with("@bar mentioned you in Issue title\n")
+        );
         assert!(rendered.message.contains("ping @you"));
+        assert!(
+            rendered
+                .message
+                .contains("Mentioned you in issue in octo/repo")
+        );
     }
 
     #[test]
@@ -369,7 +456,8 @@ mod tests {
         }];
 
         let rendered = render_notification(&thread, None, Some(&timeline)).expect("rendered");
-        assert_eq!(rendered.title, "@bar closed Issue title");
+        assert_eq!(rendered.title, "Issue title");
+        assert!(rendered.message.starts_with("@bar closed Issue title\n"));
     }
 
     #[test]
@@ -402,7 +490,8 @@ mod tests {
         }];
 
         let rendered = render_notification(&thread, None, Some(&timeline)).expect("rendered");
-        assert_eq!(rendered.title, "@bar labeled Issue title");
+        assert_eq!(rendered.title, "Issue title");
+        assert!(rendered.message.starts_with("@bar labeled Issue title\n"));
         assert!(rendered.message.contains("Added label: bug"));
     }
 }

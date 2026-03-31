@@ -7,6 +7,7 @@ use crate::github::{PullRequestDetails, Thread, TimelineActivity, TimelineEvent}
 pub struct NotificationFacts {
     pub repo_full_name: String,
     pub owner: String,
+    pub title: String,
     pub subject_type: String,
     pub reason: String,
     pub activity: Option<String>,
@@ -36,6 +37,7 @@ pub fn build_notification_facts(
         .kind
         .clone()
         .unwrap_or_else(|| String::from("Notification"));
+    let title = thread.subject.title.clone().unwrap_or_default();
 
     let (actor, actor_is_bot) = match (pull_request, activity.as_ref()) {
         (Some(pull_request), Some(activity))
@@ -61,6 +63,7 @@ pub fn build_notification_facts(
     NotificationFacts {
         repo_full_name: thread.repository.full_name.clone(),
         owner,
+        title,
         subject_type,
         reason,
         activity: activity.map(|activity| activity.kind),
@@ -83,6 +86,7 @@ pub fn matching_block_rule<'a>(
 fn is_empty_rule(rule: &BlockRule) -> bool {
     rule.repo.is_none()
         && rule.owner.is_none()
+        && rule.title.is_none()
         && rule.actor.is_none()
         && rule.actor_is_bot.is_none()
         && rule.reason.is_none()
@@ -98,6 +102,10 @@ fn matches_rule(rule: &BlockRule, facts: &NotificationFacts) -> bool {
             .owner
             .as_deref()
             .is_none_or(|pattern| WildMatch::new(pattern).matches(&facts.owner))
+        && rule
+            .title
+            .as_deref()
+            .is_none_or(|pattern| WildMatch::new(pattern).matches(&facts.title))
         && rule.actor.as_deref().is_none_or(|pattern| {
             facts
                 .actor
@@ -132,6 +140,7 @@ mod tests {
         NotificationFacts {
             repo_full_name: String::from("example-org/api"),
             owner: String::from("example-org"),
+            title: String::from("sync: deps from upstream"),
             subject_type: String::from("Issue"),
             reason: String::from("mention"),
             activity: Some(String::from("commented")),
@@ -178,5 +187,21 @@ mod tests {
         };
 
         assert!(matching_block_rule(&filters, &facts()).is_none());
+    }
+
+    #[test]
+    fn matches_block_rule_for_title_pattern() {
+        let filters = FiltersConfig {
+            block: vec![BlockRule {
+                owner: Some(String::from("example-org")),
+                subject_type: Some(String::from("PullRequest")),
+                title: Some(String::from("sync:*")),
+                ..BlockRule::default()
+            }],
+        };
+        let mut facts = facts();
+        facts.subject_type = String::from("PullRequest");
+
+        assert!(matching_block_rule(&filters, &facts).is_some());
     }
 }

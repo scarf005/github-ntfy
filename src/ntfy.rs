@@ -10,6 +10,8 @@ const CLICK_HEADER: HeaderName = HeaderName::from_static("click");
 const ICON_HEADER: HeaderName = HeaderName::from_static("icon");
 const TAGS_HEADER: HeaderName = HeaderName::from_static("tags");
 const PRIORITY_HEADER: HeaderName = HeaderName::from_static("priority");
+const SEQUENCE_ID_HEADER: HeaderName = HeaderName::from_static("x-sequence-id");
+const ACTIONS_HEADER: HeaderName = HeaderName::from_static("actions");
 
 #[derive(Clone)]
 pub struct NtfyClient {
@@ -83,6 +85,13 @@ fn build_headers(notification: &RenderedNotification, token: Option<&str>) -> Re
         PRIORITY_HEADER,
         HeaderValue::from_str(&notification.priority.to_string())?,
     );
+    headers.insert(
+        SEQUENCE_ID_HEADER,
+        HeaderValue::from_str(&notification.sequence_id)?,
+    );
+    if let Some(actions) = &notification.actions {
+        headers.insert(ACTIONS_HEADER, HeaderValue::from_str(actions)?);
+    }
 
     if let Some(token) = token {
         headers.insert(
@@ -101,8 +110,12 @@ mod tests {
     fn sample_notification() -> RenderedNotification {
         RenderedNotification {
             dedupe_key: String::from("1|now"),
+            sequence_id: String::from("github-thread-1"),
             title: String::from("Title"),
             message: String::from("Body"),
+            actions: Some(String::from(
+                "http, Done, http://127.0.0.1/done, clear=true",
+            )),
             click_url: String::from("https://github.com/octo/repo/pull/1"),
             icon_url: String::from("https://avatars.githubusercontent.com/u/1?v=4"),
             tags: String::from("github,pr"),
@@ -116,6 +129,10 @@ mod tests {
 
         assert_eq!(headers.get(TITLE_HEADER).expect("title"), "Title");
         assert_eq!(headers.get(TAGS_HEADER).expect("tags"), "github,pr");
+        assert_eq!(
+            headers.get(ACTIONS_HEADER).expect("actions"),
+            "http, Done, http://127.0.0.1/done, clear=true"
+        );
         assert!(headers.get(AUTHORIZATION).is_none());
     }
 
@@ -128,5 +145,9 @@ mod tests {
             "Bearer secret"
         );
         assert_eq!(headers.get(PRIORITY_HEADER).expect("priority"), "4");
+        assert_eq!(
+            headers.get(SEQUENCE_ID_HEADER).expect("sequence id"),
+            "github-thread-1"
+        );
     }
 }

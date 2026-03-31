@@ -3,6 +3,7 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use tracing::{error, info, warn};
 
+use crate::action;
 use crate::config::LoadedConfig;
 use crate::filter::{build_notification_facts, matching_block_rule};
 use crate::github::{GitHubClient, PullRequestDetails, Thread, TimelineEvent};
@@ -36,6 +37,14 @@ impl App {
     }
 
     pub async fn run_loop(&self) -> Result<()> {
+        let action_server = if self.loaded.config.actions.enabled {
+            Some(action::spawn_server(
+                &self.loaded.config.actions,
+                self.github.clone(),
+            )?)
+        } else {
+            None
+        };
         let mut backoff_secs = self.loaded.config.app.poll_interval_secs;
 
         loop {
@@ -57,6 +66,9 @@ impl App {
             );
             tokio::select! {
                 _ = tokio::signal::ctrl_c() => {
+                    if let Some(handle) = &action_server {
+                        handle.abort();
+                    }
                     info!("received shutdown signal");
                     return Ok(());
                 }
@@ -116,7 +128,8 @@ impl App {
         }
 
         let (pull_request, timeline) = self.enrich_thread(thread).await;
-        let rendered = render_notification(thread, pull_request.as_ref(), timeline.as_deref())?;
+        let mut rendered = render_notification(thread, pull_request.as_ref(), timeline.as_deref())?;
+        rendered.actions = action::notification_actions(&self.loaded.config.actions, &thread.id);
         let facts = build_notification_facts(thread, pull_request.as_ref(), timeline.as_deref());
 
         if let Some(rule) = matching_block_rule(&self.loaded.config.filters, &facts) {
@@ -155,6 +168,20 @@ impl App {
         let Some(subject_url) = thread.subject.url.as_deref() else {
             return (None, None);
         };
+
+        if should_enrich_pull_request {
+            match self.github.pull_request_enrichment(subject_url).await {
+                Ok((pull_request, timeline)) => return (Some(pull_request), Some(timeline)),
+                Err(error) => {
+                    warn!(
+                        error = %error,
+                        repo = %thread.repository.full_name,
+                        subject = %thread.subject.title.as_deref().unwrap_or("unknown"),
+                        "failed to enrich pull request via GraphQL, falling back to REST"
+                    );
+                }
+            }
+        }
 
         let pull_request = if should_enrich_pull_request {
             match self.github.pull_request_details(subject_url).await {

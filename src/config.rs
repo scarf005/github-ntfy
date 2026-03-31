@@ -1,5 +1,6 @@
 use anyhow::{Context, Result, bail};
 use directories::ProjectDirs;
+use reqwest::Url;
 use serde::Deserialize;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -10,6 +11,8 @@ pub struct Config {
     pub ntfy: NtfyConfig,
     #[serde(default)]
     pub app: AppConfig,
+    #[serde(default)]
+    pub actions: ActionsConfig,
     #[serde(default)]
     pub filters: FiltersConfig,
 }
@@ -51,6 +54,18 @@ pub struct AppConfig {
     pub state_path: Option<PathBuf>,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+pub struct ActionsConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_actions_listen_addr")]
+    pub listen_addr: String,
+    #[serde(default)]
+    pub public_base_url: String,
+    #[serde(default)]
+    pub token: String,
+}
+
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct FiltersConfig {
     #[serde(default)]
@@ -75,6 +90,8 @@ pub struct BlockRule {
     pub subject_type: Option<String>,
     #[serde(default)]
     pub activity: Option<String>,
+    #[serde(default)]
+    pub title: Option<String>,
 }
 
 impl Default for AppConfig {
@@ -84,6 +101,17 @@ impl Default for AppConfig {
             max_seen: default_max_seen(),
             log_level: default_log_level(),
             state_path: None,
+        }
+    }
+}
+
+impl Default for ActionsConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            listen_addr: default_actions_listen_addr(),
+            public_base_url: String::new(),
+            token: String::new(),
         }
     }
 }
@@ -152,6 +180,21 @@ fn validate(config: &Config) -> Result<()> {
     if config.app.max_seen == 0 {
         bail!("app.max_seen must be greater than zero");
     }
+    if config.actions.enabled {
+        if config.actions.public_base_url.trim().is_empty() {
+            bail!("actions.public_base_url must not be empty when actions are enabled");
+        }
+        if config.actions.token.trim().is_empty() {
+            bail!("actions.token must not be empty when actions are enabled");
+        }
+        let _ = Url::parse(&config.actions.public_base_url)
+            .context("invalid actions.public_base_url")?;
+        let _ = config
+            .actions
+            .listen_addr
+            .parse::<std::net::SocketAddr>()
+            .context("invalid actions.listen_addr")?;
+    }
     Ok(())
 }
 
@@ -186,6 +229,10 @@ fn default_max_seen() -> usize {
 
 fn default_log_level() -> String {
     String::from("info")
+}
+
+fn default_actions_listen_addr() -> String {
+    String::from("127.0.0.1:8787")
 }
 
 #[cfg(test)]
