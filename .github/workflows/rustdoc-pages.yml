@@ -22,6 +22,21 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo doc --locked --no-deps
+      - run: |
+          cat > target/doc/index.html <<'EOF'
+          <!doctype html>
+          <html lang="en">
+          <head>
+            <meta charset="utf-8">
+            <meta http-equiv="refresh" content="0; url=github_ntfy_agent/index.html">
+            <title>github-ntfy docs</title>
+            <link rel="canonical" href="github_ntfy_agent/index.html">
+          </head>
+          <body>
+            <a href="github_ntfy_agent/index.html">github-ntfy docs</a>
+          </body>
+          </html>
+          EOF
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:
