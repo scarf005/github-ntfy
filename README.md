@@ -11,6 +11,7 @@ Self-hosted GitHub notification forwarder for `ntfy`.
 ## Why
 
 - GitHub mobile notifications are noisy and low-context
+- GitHub Mobile still skips many inbox pushes: <https://github.com/orgs/community/discussions/7229>
 - `ntfy` gives better routing, priority, filtering, and self-hosting
 
 ## Quick start
