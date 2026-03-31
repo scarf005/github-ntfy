@@ -131,6 +131,8 @@ impl App {
         let mut rendered = render_notification(thread, pull_request.as_ref(), timeline.as_deref())?;
         rendered.actions = action::notification_actions(&self.loaded.config.actions, &thread.id);
         let facts = build_notification_facts(thread, pull_request.as_ref(), timeline.as_deref());
+        let merge = state.merge_notification(&rendered.sequence_id, &rendered.message);
+        rendered.message = merge.message();
 
         if let Some(rule) = matching_block_rule(&self.loaded.config.filters, &facts) {
             warn!(
@@ -145,12 +147,22 @@ impl App {
             return Ok(false);
         }
 
+        if merge.had_existing && !merge.inserted_new_block {
+            state.mark_seen(rendered.dedupe_key, self.loaded.config.app.max_seen);
+            return Ok(false);
+        }
+
         self.ntfy.send(&rendered).await.with_context(|| {
             format!(
                 "failed to send ntfy notification for {}",
                 thread.repository.full_name
             )
         })?;
+        state.remember_notification(
+            rendered.sequence_id.clone(),
+            merge.blocks,
+            self.loaded.config.app.max_seen,
+        );
         state.mark_seen(rendered.dedupe_key, self.loaded.config.app.max_seen);
         Ok(true)
     }

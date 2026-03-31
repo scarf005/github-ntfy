@@ -1,17 +1,42 @@
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs;
 use std::path::Path;
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
+const MAX_MERGED_MESSAGES: usize = 4;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NotificationMerge {
+    pub blocks: Vec<String>,
+    pub had_existing: bool,
+    pub inserted_new_block: bool,
+}
+
+impl NotificationMerge {
+    pub fn message(&self) -> String {
+        self.blocks.join("\n\n")
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct NotificationEntry {
+    sequence_id: String,
+    messages: Vec<String>,
+}
+
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct State {
     pub last_modified: Option<String>,
     #[serde(default)]
     seen: VecDeque<String>,
+    #[serde(default)]
+    notifications: VecDeque<NotificationEntry>,
     #[serde(skip)]
     seen_index: HashSet<String>,
+    #[serde(skip)]
+    notification_index: HashMap<String, Vec<String>>,
 }
 
 impl State {
@@ -25,6 +50,7 @@ impl State {
         let mut state: Self = serde_json::from_str(&text)
             .with_context(|| format!("failed to parse state: {}", path.display()))?;
         state.rebuild_seen_index();
+        state.rebuild_notification_index();
         Ok(state)
     }
 
@@ -67,6 +93,67 @@ impl State {
         }
     }
 
+    pub fn merge_notification(
+        &self,
+        sequence_id: &str,
+        incoming_message: &str,
+    ) -> NotificationMerge {
+        let incoming_message = incoming_message.trim();
+        let Some(existing) = self.notification_index.get(sequence_id) else {
+            return NotificationMerge {
+                blocks: vec![String::from(incoming_message)],
+                had_existing: false,
+                inserted_new_block: true,
+            };
+        };
+
+        if existing.iter().any(|block| block == incoming_message) {
+            return NotificationMerge {
+                blocks: existing.clone(),
+                had_existing: true,
+                inserted_new_block: false,
+            };
+        }
+
+        let mut blocks = Vec::with_capacity((existing.len() + 1).min(MAX_MERGED_MESSAGES));
+        blocks.push(String::from(incoming_message));
+        blocks.extend(existing.iter().take(MAX_MERGED_MESSAGES - 1).cloned());
+
+        NotificationMerge {
+            blocks,
+            had_existing: true,
+            inserted_new_block: true,
+        }
+    }
+
+    pub fn remember_notification(
+        &mut self,
+        sequence_id: String,
+        messages: Vec<String>,
+        max_seen: usize,
+    ) {
+        if let Some(entry) = self
+            .notifications
+            .iter_mut()
+            .find(|entry| entry.sequence_id == sequence_id)
+        {
+            entry.messages = messages.clone();
+            self.notification_index.insert(sequence_id, messages);
+            return;
+        }
+
+        self.notifications.push_back(NotificationEntry {
+            sequence_id: sequence_id.clone(),
+            messages: messages.clone(),
+        });
+        self.notification_index.insert(sequence_id, messages);
+        while self.notifications.len() > max_seen {
+            if let Some(removed) = self.notifications.pop_front() {
+                self.notification_index.remove(&removed.sequence_id);
+            }
+        }
+    }
+
     fn rebuild_seen_index(&mut self) {
         let mut seen_index = HashSet::with_capacity(self.seen.len());
         let mut deduped = VecDeque::with_capacity(self.seen.len());
@@ -77,6 +164,29 @@ impl State {
         }
         self.seen = deduped;
         self.seen_index = seen_index;
+    }
+
+    fn rebuild_notification_index(&mut self) {
+        let mut notification_index = HashMap::with_capacity(self.notifications.len());
+        let mut deduped = VecDeque::with_capacity(self.notifications.len());
+        for entry in self.notifications.drain(..) {
+            if notification_index.contains_key(&entry.sequence_id) {
+                continue;
+            }
+
+            let messages = entry
+                .messages
+                .into_iter()
+                .take(MAX_MERGED_MESSAGES)
+                .collect::<Vec<_>>();
+            notification_index.insert(entry.sequence_id.clone(), messages.clone());
+            deduped.push_back(NotificationEntry {
+                sequence_id: entry.sequence_id,
+                messages,
+            });
+        }
+        self.notifications = deduped;
+        self.notification_index = notification_index;
     }
 }
 
@@ -134,5 +244,48 @@ mod tests {
         assert!(state.has_seen("one"));
         assert!(state.has_seen("two"));
         fs::remove_file(path).expect("cleanup");
+    }
+
+    #[test]
+    fn merges_new_notification_blocks_newest_first() {
+        let mut state = State::default();
+        state.remember_notification(
+            String::from("github-thread-1"),
+            vec![String::from("older"), String::from("oldest")],
+            10,
+        );
+
+        let merged = state.merge_notification("github-thread-1", "newest");
+
+        assert!(merged.had_existing);
+        assert!(merged.inserted_new_block);
+        assert_eq!(
+            merged.blocks,
+            vec![
+                String::from("newest"),
+                String::from("older"),
+                String::from("oldest")
+            ]
+        );
+        assert_eq!(merged.message(), "newest\n\nolder\n\noldest");
+    }
+
+    #[test]
+    fn skips_duplicate_notification_blocks() {
+        let mut state = State::default();
+        state.remember_notification(
+            String::from("github-thread-1"),
+            vec![String::from("same"), String::from("older")],
+            10,
+        );
+
+        let merged = state.merge_notification("github-thread-1", "same");
+
+        assert!(merged.had_existing);
+        assert!(!merged.inserted_new_block);
+        assert_eq!(
+            merged.blocks,
+            vec![String::from("same"), String::from("older")]
+        );
     }
 }
