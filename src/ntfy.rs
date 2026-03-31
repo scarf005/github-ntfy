@@ -37,7 +37,10 @@ impl NtfyClient {
 
     pub async fn send(&self, notification: &RenderedNotification) -> Result<()> {
         self.client
-            .post(self.publish_url.clone())
+            .post(publish_message_url(
+                &self.publish_url,
+                &notification.sequence_id,
+            )?)
             .headers(build_headers(notification, self.token.as_deref())?)
             .body(notification.message.clone())
             .send()
@@ -70,6 +73,14 @@ impl NtfyClient {
             .context("ntfy endpoint returned an error")?;
         Ok(())
     }
+}
+
+fn publish_message_url(base_url: &Url, sequence_id: &str) -> Result<Url> {
+    let mut url = base_url.clone();
+    url.path_segments_mut()
+        .map_err(|_| anyhow::anyhow!("ntfy.publish_url cannot be a base URL"))?
+        .push(sequence_id);
+    Ok(url)
 }
 
 fn build_headers(notification: &RenderedNotification, token: Option<&str>) -> Result<HeaderMap> {
@@ -149,5 +160,16 @@ mod tests {
             headers.get(SEQUENCE_ID_HEADER).expect("sequence id"),
             "github-thread-1"
         );
+    }
+
+    #[test]
+    fn appends_sequence_id_to_publish_url() {
+        let url = publish_message_url(
+            &Url::parse("https://ntfy.example/github").expect("url"),
+            "github-thread-1",
+        )
+        .expect("publish url");
+
+        assert_eq!(url.as_str(), "https://ntfy.example/github/github-thread-1");
     }
 }
