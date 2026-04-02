@@ -5,6 +5,11 @@ use crate::github::{PullRequestDetails, Thread, TimelineActivity, TimelineEvent}
 const DEFAULT_ICON_URL: &str =
     "https://github.githubassets.com/images/modules/logos_page/GitHub-Mark.png";
 
+struct NotificationIdentity {
+    click_url: String,
+    sequence_id: String,
+}
+
 #[derive(Debug, Clone)]
 pub struct RenderedNotification {
     pub dedupe_key: String,
@@ -29,8 +34,7 @@ pub fn render_notification(
         .clone()
         .unwrap_or_else(|| thread.repository.full_name.clone());
     let base_message = base_message(thread);
-    let click_url = click_url(thread);
-    let sequence_id = slugified_sequence_id(&click_url);
+    let identity = notification_identity(thread);
     let icon_url = thread
         .repository
         .owner
@@ -51,11 +55,11 @@ pub fn render_notification(
 
     Ok(RenderedNotification {
         dedupe_key: format!("{}|{}", thread.id, thread.updated_at),
-        sequence_id,
+        sequence_id: identity.sequence_id,
         title,
         message,
         actions: None,
-        click_url,
+        click_url: identity.click_url,
         icon_url,
         tags,
         priority,
@@ -259,6 +263,14 @@ fn click_url(thread: &Thread) -> String {
     }
 }
 
+fn notification_identity(thread: &Thread) -> NotificationIdentity {
+    let click_url = click_url(thread);
+    NotificationIdentity {
+        sequence_id: slugified_sequence_id(&click_url),
+        click_url,
+    }
+}
+
 fn slugified_sequence_id(click_url: &str) -> String {
     let normalized = click_url.trim_end_matches('/').to_ascii_lowercase();
     let mut slug = String::with_capacity(normalized.len());
@@ -373,6 +385,18 @@ mod tests {
         assert_eq!(rendered.click_url, "https://github.com/octo/repo/pull/42");
         assert_eq!(rendered.sequence_id, "https-github-com-octo-repo-pull-42");
         assert_eq!(rendered.message, "Pull request update in octo/repo");
+    }
+
+    #[test]
+    fn slugifies_sequence_id_with_single_dashes() {
+        assert_eq!(
+            slugified_sequence_id("https://github.com/octo/repo/pull/42/"),
+            "https-github-com-octo-repo-pull-42"
+        );
+        assert_eq!(
+            slugified_sequence_id("https://github.com/octo/repo/issues/7?foo=bar"),
+            "https-github-com-octo-repo-issues-7-foo-bar"
+        );
     }
 
     #[test]
