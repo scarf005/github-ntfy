@@ -30,6 +30,7 @@ pub fn render_notification(
         .unwrap_or_else(|| thread.repository.full_name.clone());
     let base_message = base_message(thread);
     let click_url = click_url(thread);
+    let sequence_id = slugified_sequence_id(&click_url);
     let icon_url = thread
         .repository
         .owner
@@ -50,7 +51,7 @@ pub fn render_notification(
 
     Ok(RenderedNotification {
         dedupe_key: format!("{}|{}", thread.id, thread.updated_at),
-        sequence_id: format!("github-thread-{}", thread.id),
+        sequence_id,
         title,
         message,
         actions: None,
@@ -258,6 +259,32 @@ fn click_url(thread: &Thread) -> String {
     }
 }
 
+fn slugified_sequence_id(click_url: &str) -> String {
+    let normalized = click_url.trim_end_matches('/').to_ascii_lowercase();
+    let mut slug = String::with_capacity(normalized.len());
+    let mut last_was_dash = false;
+
+    for ch in normalized.chars() {
+        if ch.is_ascii_alphanumeric() {
+            slug.push(ch);
+            last_was_dash = false;
+            continue;
+        }
+
+        if !last_was_dash {
+            slug.push('-');
+            last_was_dash = true;
+        }
+    }
+
+    let trimmed = slug.trim_matches('-');
+    if trimmed.is_empty() {
+        String::from("github-notification")
+    } else {
+        trimmed.to_string()
+    }
+}
+
 fn build_tags(thread: &Thread) -> String {
     let mut tags = vec![String::from("github")];
     let type_tag = match thread.subject.kind.as_deref() {
@@ -344,7 +371,7 @@ mod tests {
     fn renders_pull_url_from_api_url() {
         let rendered = render_notification(&sample_thread(), None, None).expect("rendered");
         assert_eq!(rendered.click_url, "https://github.com/octo/repo/pull/42");
-        assert_eq!(rendered.sequence_id, "github-thread-1");
+        assert_eq!(rendered.sequence_id, "https-github-com-octo-repo-pull-42");
         assert_eq!(rendered.message, "Pull request update in octo/repo");
     }
 
