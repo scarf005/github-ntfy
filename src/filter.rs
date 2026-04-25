@@ -107,10 +107,10 @@ fn matches_rule(rule: &BlockRule, facts: &NotificationFacts) -> bool {
             .as_deref()
             .is_none_or(|pattern| WildMatch::new(pattern).matches(&facts.title))
         && rule.actor.as_deref().is_none_or(|pattern| {
-            facts
-                .actor
-                .as_deref()
-                .is_some_and(|actor| WildMatch::new(pattern).matches(actor))
+            let matcher = WildMatch::new(pattern);
+            actor_match_values(facts)
+                .into_iter()
+                .any(|actor| matcher.matches(&actor))
         })
         && rule
             .actor_is_bot
@@ -129,6 +129,23 @@ fn matches_rule(rule: &BlockRule, facts: &NotificationFacts) -> bool {
                 .as_deref()
                 .is_some_and(|candidate| activity.eq_ignore_ascii_case(candidate))
         })
+}
+
+fn actor_match_values(facts: &NotificationFacts) -> Vec<String> {
+    let Some(actor) = facts.actor.as_deref() else {
+        return Vec::new();
+    };
+
+    let mut values = vec![String::from(actor)];
+    if let Some(stripped) = actor.strip_suffix("[bot]") {
+        if !stripped.is_empty() {
+            values.push(String::from(stripped));
+        }
+    } else {
+        values.push(format!("{actor}[bot]"));
+    }
+
+    values
 }
 
 #[cfg(test)]
@@ -201,6 +218,52 @@ mod tests {
         };
         let mut facts = facts();
         facts.subject_type = String::from("PullRequest");
+
+        assert!(matching_block_rule(&filters, &facts).is_some());
+    }
+
+    #[test]
+    fn matches_bot_actor_rule_with_bracket_suffix_against_plain_bot_login() {
+        let filters = FiltersConfig {
+            block: vec![BlockRule {
+                actor: Some(String::from("autofix-ci[bot]")),
+                activity: Some(String::from("commented")),
+                ..BlockRule::default()
+            }],
+        };
+        let mut facts = facts();
+        facts.actor = Some(String::from("autofix-ci"));
+
+        assert!(matching_block_rule(&filters, &facts).is_some());
+    }
+
+    #[test]
+    fn matches_bot_actor_rule_against_plain_login_even_without_bot_type() {
+        let filters = FiltersConfig {
+            block: vec![BlockRule {
+                actor: Some(String::from("autofix-ci[bot]")),
+                activity: Some(String::from("commented")),
+                ..BlockRule::default()
+            }],
+        };
+        let mut facts = facts();
+        facts.actor = Some(String::from("autofix-ci"));
+        facts.actor_is_bot = false;
+
+        assert!(matching_block_rule(&filters, &facts).is_some());
+    }
+
+    #[test]
+    fn matches_plain_bot_actor_rule_against_bracket_suffix_login() {
+        let filters = FiltersConfig {
+            block: vec![BlockRule {
+                actor: Some(String::from("autofix-ci")),
+                activity: Some(String::from("commented")),
+                ..BlockRule::default()
+            }],
+        };
+        let mut facts = facts();
+        facts.actor = Some(String::from("autofix-ci[bot]"));
 
         assert!(matching_block_rule(&filters, &facts).is_some());
     }
