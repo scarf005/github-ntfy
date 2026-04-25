@@ -86,36 +86,37 @@ fn enrich_pull_request(
     let actor = merged_by.unwrap_or_else(|| activity.actor.clone());
 
     let summary = match activity.kind.as_str() {
-        "review_approved" => format!("@{} approved {}", actor, base_title),
-        "review_changes_requested" => format!("@{} requested changes on {}", actor, base_title),
-        "reviewed" => format!("@{} reviewed {}", actor, base_title),
+        "review_approved" => format!("@{} approved", actor),
+        "review_changes_requested" => format!("@{} requested changes", actor),
+        "reviewed" => format!("@{} reviewed", actor),
         "commented" if reason == "mention" || reason == "team_mention" => {
-            format!("@{} mentioned you in {}", actor, base_title)
+            format!("@{} mentioned you", actor)
         }
-        "commented" => format!("@{} commented on {}", actor, base_title),
+        "commented" => format!("@{} commented", actor),
         "committed" => format!(
-            "@{} pushed {} {} to {}",
+            "@{} pushed {} {}",
             actor,
             activity.commit_count.unwrap_or(1),
-            pluralize_commit(activity.commit_count.unwrap_or(1)),
-            base_title
+            pluralize_commit(activity.commit_count.unwrap_or(1))
         ),
-        "merged" => format!("@{} merged {}", actor, base_title),
-        "review_requested" => format!("@{} requested review on {}", actor, base_title),
-        "review_request_removed" => format!("@{} removed review request on {}", actor, base_title),
-        "review_dismissed" => format!("@{} dismissed review on {}", actor, base_title),
-        "closed" if is_merged => format!("@{} merged {}", actor, base_title),
-        "closed" => format!("@{} closed {}", actor, base_title),
-        "reopened" => format!("@{} reopened {}", actor, base_title),
-        "ready_for_review" => format!("@{} marked {} ready for review", actor, base_title),
-        "convert_to_draft" => format!("@{} converted {} to draft", actor, base_title),
-        _ => String::from(base_title),
+        "merged" => format!("@{} merged", actor),
+        "review_requested" => format!("@{} requested review", actor),
+        "review_request_removed" => format!("@{} removed review request", actor),
+        "review_dismissed" => format!("@{} dismissed review", actor),
+        "closed" if is_merged => format!("@{} merged", actor),
+        "closed" => format!("@{} closed", actor),
+        "reopened" => format!("@{} reopened", actor),
+        "ready_for_review" => format!("@{} marked ready for review", actor),
+        "convert_to_draft" => format!("@{} converted to draft", actor),
+        _ => String::from("Updated"),
     };
 
-    let message = prepend_summary(
-        &summary,
-        &detail_message(base_message, activity.detail.as_deref()),
-    );
+    let message = if activity.kind == "commented" && reason != "mention" && reason != "team_mention"
+    {
+        format_comment_message(&actor, activity.detail.as_deref(), &summary)
+    } else {
+        prepend_summary(&summary, activity.detail.as_deref())
+    };
 
     (String::from(base_title), message)
 }
@@ -147,27 +148,39 @@ fn enrich_issue(
         _ => String::from(base_title),
     };
 
-    let message = prepend_summary(
-        &summary,
-        &detail_message(base_message, activity.detail.as_deref()),
-    );
+    let message = if activity.kind == "commented" && reason != "mention" && reason != "team_mention"
+    {
+        format_comment_message(&activity.actor, activity.detail.as_deref(), &summary)
+    } else {
+        prepend_summary(&summary, activity.detail.as_deref())
+    };
 
     (String::from(base_title), message)
 }
 
-fn prepend_summary(summary: &str, message: &str) -> String {
-    if summary.trim().is_empty() {
-        return String::from(message);
+fn format_comment_message(actor: &str, detail: Option<&str>, fallback: &str) -> String {
+    if let Some(detail) = detail
+        .map(trim_multiline_text)
+        .filter(|detail| !detail.is_empty())
+    {
+        format!("@{}: {}", actor, detail)
+    } else {
+        String::from(fallback)
     }
-
-    format!("{}\n{}", summary, message)
 }
 
-fn detail_message(base_message: &str, detail: Option<&str>) -> String {
-    if let Some(detail) = detail.filter(|detail| !detail.trim().is_empty()) {
-        format!("{}\n{}", trim_multiline_text(detail), base_message)
+fn prepend_summary(summary: &str, detail: Option<&str>) -> String {
+    if summary.trim().is_empty() {
+        return String::new();
+    }
+
+    if let Some(detail) = detail
+        .map(trim_multiline_text)
+        .filter(|detail| !detail.is_empty())
+    {
+        format!("{}\n{}", summary, detail)
     } else {
-        String::from(base_message)
+        String::from(summary)
     }
 }
 
@@ -327,7 +340,9 @@ fn priority(thread: &Thread) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::github::{Label, Owner, Repository, Subject, Thread, TimelineEvent, User};
+    use crate::github::{
+        Label, Owner, PullRequestDetails, Repository, Subject, Thread, TimelineEvent, User,
+    };
 
     fn sample_thread() -> Thread {
         Thread {
@@ -428,12 +443,157 @@ mod tests {
 
         let rendered = render_notification(&thread, None, Some(&timeline)).expect("rendered");
         assert_eq!(rendered.title, "Fix pull link");
-        assert!(
-            rendered
-                .message
-                .starts_with("@foo pushed 1 commit to Fix pull link\n")
-        );
+        assert!(rendered.message.starts_with("@foo pushed 1 commit\n"));
         assert!(rendered.message.contains("feat: improve notifier"));
+        assert!(
+            !rendered
+                .message
+                .contains("Pull request update in octo/repo")
+        );
+        assert!(!rendered.message.contains("Fix pull link"));
+    }
+
+    #[test]
+    fn renders_review_approval_without_generic_pr_suffix() {
+        let thread = sample_thread();
+        let timeline = vec![TimelineEvent {
+            event: Some(String::from("reviewed")),
+            actor: Some(User {
+                login: String::from("chaosvolt"),
+                kind: None,
+            }),
+            user: None,
+            author: None,
+            committer: None,
+            assignee: None,
+            review_requester: None,
+            requested_reviewer: None,
+            requested_team: None,
+            label: None,
+            dismissed_review: None,
+            body: None,
+            message: None,
+            commit: None,
+            state: Some(String::from("APPROVED")),
+            created_at: None,
+            updated_at: None,
+            submitted_at: Some(String::from("2026-03-25T00:00:00Z")),
+        }];
+
+        let rendered = render_notification(&thread, None, Some(&timeline)).expect("rendered");
+
+        assert_eq!(rendered.message, "@chaosvolt approved");
+    }
+
+    #[test]
+    fn renders_merged_pr_without_title() {
+        let thread = sample_thread();
+        let pull_request = PullRequestDetails {
+            merged: true,
+            merged_by: Some(User {
+                login: String::from("chaosvolt"),
+                kind: None,
+            }),
+        };
+        let timeline = vec![TimelineEvent {
+            event: Some(String::from("closed")),
+            actor: Some(User {
+                login: String::from("someone-else"),
+                kind: None,
+            }),
+            user: None,
+            author: None,
+            committer: None,
+            assignee: None,
+            review_requester: None,
+            requested_reviewer: None,
+            requested_team: None,
+            label: None,
+            dismissed_review: None,
+            body: None,
+            message: None,
+            commit: None,
+            state: None,
+            created_at: Some(String::from("2026-03-25T00:00:00Z")),
+            updated_at: None,
+            submitted_at: None,
+        }];
+
+        let rendered =
+            render_notification(&thread, Some(&pull_request), Some(&timeline)).expect("rendered");
+
+        assert_eq!(rendered.message, "@chaosvolt merged");
+    }
+
+    #[test]
+    fn renders_pull_request_comment_as_actor_prefix() {
+        let thread = sample_thread();
+        let timeline = vec![TimelineEvent {
+            event: Some(String::from("commented")),
+            actor: Some(User {
+                login: String::from("narkiel"),
+                kind: None,
+            }),
+            user: None,
+            author: None,
+            committer: None,
+            assignee: None,
+            review_requester: None,
+            requested_reviewer: None,
+            requested_team: None,
+            label: None,
+            dismissed_review: None,
+            body: Some(String::from(
+                "Encountered same bug when grab/dragging a Warehouse shelf with a bunch of stuff on it",
+            )),
+            message: None,
+            commit: None,
+            state: None,
+            created_at: Some(String::from("2026-03-25T00:00:00Z")),
+            updated_at: None,
+            submitted_at: None,
+        }];
+
+        let rendered = render_notification(&thread, None, Some(&timeline)).expect("rendered");
+
+        assert_eq!(
+            rendered.message,
+            "@narkiel: Encountered same bug when grab/dragging a Warehouse shelf with a bunch of stuff on it"
+        );
+    }
+
+    #[test]
+    fn renders_pull_request_mention_without_title_in_body() {
+        let mut thread = sample_thread();
+        thread.reason = Some(String::from("mention"));
+        let timeline = vec![TimelineEvent {
+            event: Some(String::from("commented")),
+            actor: Some(User {
+                login: String::from("dedmemdev"),
+                kind: None,
+            }),
+            user: None,
+            author: None,
+            committer: None,
+            assignee: None,
+            review_requester: None,
+            requested_reviewer: None,
+            requested_team: None,
+            label: None,
+            dismissed_review: None,
+            body: Some(String::from("@you please check this")),
+            message: None,
+            commit: None,
+            state: None,
+            created_at: Some(String::from("2026-03-25T00:00:00Z")),
+            updated_at: None,
+            submitted_at: None,
+        }];
+
+        let rendered = render_notification(&thread, None, Some(&timeline)).expect("rendered");
+
+        assert!(rendered.message.starts_with("@dedmemdev mentioned you\n"));
+        assert!(!rendered.message.contains("Fix pull link"));
     }
 
     #[test]
@@ -473,9 +633,46 @@ mod tests {
         );
         assert!(rendered.message.contains("ping @you"));
         assert!(
-            rendered
+            !rendered
                 .message
                 .contains("Mentioned you in issue in octo/repo")
+        );
+    }
+
+    #[test]
+    fn renders_issue_comment_as_actor_prefix() {
+        let thread = sample_issue_thread();
+        let timeline = vec![TimelineEvent {
+            event: Some(String::from("commented")),
+            actor: Some(User {
+                login: String::from("narkiel"),
+                kind: None,
+            }),
+            user: None,
+            author: None,
+            committer: None,
+            assignee: None,
+            review_requester: None,
+            requested_reviewer: None,
+            requested_team: None,
+            label: None,
+            dismissed_review: None,
+            body: Some(String::from(
+                "Downloaded latest nightly, followed steps to reproduce listed in original issue.",
+            )),
+            message: None,
+            commit: None,
+            state: None,
+            created_at: Some(String::from("2026-03-25T00:00:00Z")),
+            updated_at: None,
+            submitted_at: None,
+        }];
+
+        let rendered = render_notification(&thread, None, Some(&timeline)).expect("rendered");
+
+        assert_eq!(
+            rendered.message,
+            "@narkiel: Downloaded latest nightly, followed steps to reproduce listed in original issue."
         );
     }
 
@@ -508,7 +705,7 @@ mod tests {
 
         let rendered = render_notification(&thread, None, Some(&timeline)).expect("rendered");
         assert_eq!(rendered.title, "Issue title");
-        assert!(rendered.message.starts_with("@bar closed Issue title\n"));
+        assert_eq!(rendered.message, "@bar closed Issue title");
     }
 
     #[test]
@@ -544,5 +741,6 @@ mod tests {
         assert_eq!(rendered.title, "Issue title");
         assert!(rendered.message.starts_with("@bar labeled Issue title\n"));
         assert!(rendered.message.contains("Added label: bug"));
+        assert!(!rendered.message.contains("Issue update in octo/repo"));
     }
 }
