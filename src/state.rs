@@ -16,7 +16,7 @@ pub struct NotificationMerge {
 
 impl NotificationMerge {
     pub fn message(&self) -> String {
-        self.blocks.join("\n\n")
+        self.blocks.join("\n")
     }
 }
 
@@ -267,7 +267,7 @@ mod tests {
                 String::from("oldest")
             ]
         );
-        assert_eq!(merged.message(), "newest\n\nolder\n\noldest");
+        assert_eq!(merged.message(), "newest\nolder\noldest");
     }
 
     #[test]
