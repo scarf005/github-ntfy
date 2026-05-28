@@ -52,6 +52,16 @@ query PullRequestEnrichment($owner: String!, $name: String!, $number: Int!) {
               login
             }
             body
+            comments(last: 10) {
+              nodes {
+                author {
+                  __typename
+                  login
+                }
+                body
+                createdAt
+              }
+            }
             createdAt
           }
           ... on IssueComment {
@@ -231,9 +241,11 @@ enum GraphQlTimelineItem {
         state: Option<String>,
         author: Option<GraphQlActor>,
         body: Option<String>,
+        comments: GraphQlReviewCommentConnection,
         #[serde(rename = "createdAt")]
         created_at: String,
     },
+
     IssueComment {
         author: Option<GraphQlActor>,
         body: Option<String>,
@@ -303,6 +315,19 @@ enum GraphQlTimelineItem {
         #[serde(rename = "createdAt")]
         created_at: String,
     },
+}
+
+#[derive(Debug, Deserialize)]
+struct GraphQlReviewCommentConnection {
+    nodes: Vec<GraphQlReviewComment>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GraphQlReviewComment {
+    author: Option<GraphQlActor>,
+    body: Option<String>,
+    #[serde(rename = "createdAt")]
+    created_at: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -677,27 +702,34 @@ fn graphql_timeline_event(item: &GraphQlTimelineItem) -> TimelineEvent {
             state,
             author,
             body,
+            comments,
             created_at,
-        } => TimelineEvent {
-            event: Some(String::from("reviewed")),
-            actor: author.clone().map(graphql_actor_to_user),
-            user: None,
-            author: None,
-            committer: None,
-            assignee: None,
-            review_requester: None,
-            requested_reviewer: None,
-            requested_team: None,
-            label: None,
-            dismissed_review: None,
-            body: body.clone(),
-            message: None,
-            commit: None,
-            state: state.clone(),
-            created_at: Some(created_at.clone()),
-            updated_at: None,
-            submitted_at: Some(created_at.clone()),
-        },
+        } => {
+            let latest_comment = latest_review_comment(comments);
+            TimelineEvent {
+                event: Some(String::from("reviewed")),
+                actor: author
+                    .clone()
+                    .or_else(|| latest_comment.and_then(|comment| comment.author.clone()))
+                    .map(graphql_actor_to_user),
+                user: None,
+                author: None,
+                committer: None,
+                assignee: None,
+                review_requester: None,
+                requested_reviewer: None,
+                requested_team: None,
+                label: None,
+                dismissed_review: None,
+                body: review_detail(body, latest_comment),
+                message: None,
+                commit: None,
+                state: state.clone(),
+                created_at: Some(created_at.clone()),
+                updated_at: None,
+                submitted_at: Some(created_at.clone()),
+            }
+        }
         GraphQlTimelineItem::IssueComment {
             author,
             body,
@@ -906,6 +938,30 @@ fn graphql_timeline_event(item: &GraphQlTimelineItem) -> TimelineEvent {
     }
 }
 
+fn review_detail(
+    body: &Option<String>,
+    fallback_comment: Option<&GraphQlReviewComment>,
+) -> Option<String> {
+    body.clone()
+        .filter(|body| !body.trim().is_empty())
+        .or_else(|| fallback_comment.and_then(|comment| comment.body.clone()))
+}
+
+fn latest_review_comment(
+    comments: &GraphQlReviewCommentConnection,
+) -> Option<&GraphQlReviewComment> {
+    comments
+        .nodes
+        .iter()
+        .filter(|comment| {
+            comment
+                .body
+                .as_deref()
+                .is_some_and(|body| !body.trim().is_empty())
+        })
+        .max_by_key(|comment| comment.created_at.as_str())
+}
+
 fn graphql_commit_event(commit: &GraphQlCommit) -> TimelineEvent {
     let actor = commit
         .author
@@ -1019,6 +1075,46 @@ mod tests {
         assert_eq!(subject.owner, "cataclysmbn");
         assert_eq!(subject.repo, "Cataclysm-BN");
         assert_eq!(subject.number, 8404);
+    }
+
+    #[test]
+    fn converts_graphql_review_comments_to_review_body_fallback() {
+        let event = graphql_timeline_event(&GraphQlTimelineItem::PullRequestReview {
+            state: Some(String::from("COMMENTED")),
+            author: Some(GraphQlActor {
+                kind: String::from("User"),
+                login: String::from("reviewer"),
+            }),
+            body: Some(String::from("   ")),
+            comments: GraphQlReviewCommentConnection {
+                nodes: vec![
+                    GraphQlReviewComment {
+                        author: Some(GraphQlActor {
+                            kind: String::from("User"),
+                            login: String::from("reviewer"),
+                        }),
+                        body: Some(String::from("older inline comment")),
+                        created_at: String::from("2026-03-30T04:08:52Z"),
+                    },
+                    GraphQlReviewComment {
+                        author: Some(GraphQlActor {
+                            kind: String::from("User"),
+                            login: String::from("reviewer"),
+                        }),
+                        body: Some(String::from("newer inline comment")),
+                        created_at: String::from("2026-03-30T04:09:52Z"),
+                    },
+                ],
+            },
+            created_at: String::from("2026-03-30T04:10:52Z"),
+        });
+
+        assert_eq!(event.event.as_deref(), Some("reviewed"));
+        assert_eq!(
+            event.actor.as_ref().map(|user| user.login.as_str()),
+            Some("reviewer")
+        );
+        assert_eq!(event.body.as_deref(), Some("newer inline comment"));
     }
 
     #[test]

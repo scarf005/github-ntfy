@@ -486,6 +486,41 @@ mod tests {
     }
 
     #[test]
+    fn renders_review_comment_body() {
+        let thread = sample_thread();
+        let timeline = vec![TimelineEvent {
+            event: Some(String::from("reviewed")),
+            actor: Some(User {
+                login: String::from("chaosvolt"),
+                kind: None,
+            }),
+            user: None,
+            author: None,
+            committer: None,
+            assignee: None,
+            review_requester: None,
+            requested_reviewer: None,
+            requested_team: None,
+            label: None,
+            dismissed_review: None,
+            body: Some(String::from("Could you split this into a helper?")),
+            message: None,
+            commit: None,
+            state: Some(String::from("COMMENTED")),
+            created_at: None,
+            updated_at: None,
+            submitted_at: Some(String::from("2026-03-25T00:00:00Z")),
+        }];
+
+        let rendered = render_notification(&thread, None, Some(&timeline)).expect("rendered");
+
+        assert_eq!(
+            rendered.message,
+            "@chaosvolt reviewed\nCould you split this into a helper?"
+        );
+    }
+
+    #[test]
     fn renders_merged_pr_without_title() {
         let thread = sample_thread();
         let pull_request = PullRequestDetails {
