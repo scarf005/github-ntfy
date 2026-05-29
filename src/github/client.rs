@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use anyhow::{Context, Result};
 use reqwest::header::{
     ACCEPT, AUTHORIZATION, HeaderMap, HeaderName, HeaderValue, IF_MODIFIED_SINCE, LAST_MODIFIED,
@@ -10,7 +12,10 @@ use serde_json::json;
 use crate::config::GitHubConfig;
 
 use super::auth::resolve_token;
-use super::model::{PollResult, PullRequestDetails, Thread, TimelineEvent};
+use super::model::{
+    AutoWatchRepository, PollResult, PullRequestDetails, RepositorySubscriptionResult, Thread,
+    TimelineEvent,
+};
 use super::timeline::timeline_url;
 
 const API_VERSION_HEADER: HeaderName = HeaderName::from_static("x-github-api-version");
@@ -398,6 +403,7 @@ pub struct GitHubClient {
 impl GitHubClient {
     pub fn new(config: &GitHubConfig) -> Result<Self> {
         let client = Client::builder()
+            .timeout(Duration::from_secs(config.timeout_secs))
             .build()
             .context("failed to build GitHub client")?;
         let api_base = Url::parse(&config.api_base).context("invalid github.api_base")?;
@@ -408,6 +414,78 @@ impl GitHubClient {
             api_base,
             token,
         })
+    }
+
+    pub async fn repositories_for_auto_watch(
+        &self,
+        config: &GitHubConfig,
+    ) -> Result<Vec<AutoWatchRepository>> {
+        let per_page = config.per_page.clamp(1, 100);
+        let mut page = 1u32;
+        let mut repositories = Vec::new();
+
+        loop {
+            let batch = self
+                .client
+                .get(self.endpoint("/user/repos")?)
+                .headers(self.headers()?)
+                .query(&[
+                    (
+                        "affiliation",
+                        String::from("owner,collaborator,organization_member"),
+                    ),
+                    ("sort", String::from("created")),
+                    ("direction", String::from("desc")),
+                    ("per_page", per_page.to_string()),
+                    ("page", page.to_string()),
+                ])
+                .send()
+                .await
+                .context("failed to list GitHub repositories for auto-watch")?
+                .error_for_status()
+                .context("GitHub repository list request failed")?
+                .json::<Vec<AutoWatchRepository>>()
+                .await
+                .context("failed to decode GitHub repositories")?;
+
+            let batch_len = batch.len();
+            repositories.extend(batch);
+
+            if batch_len < per_page as usize {
+                break;
+            }
+            page = page.saturating_add(1);
+        }
+
+        Ok(repositories)
+    }
+
+    pub async fn subscribe_repository(
+        &self,
+        full_name: &str,
+    ) -> Result<RepositorySubscriptionResult> {
+        let response = self
+            .client
+            .put(self.endpoint(&format!("/repos/{full_name}/subscription"))?)
+            .headers(self.headers()?)
+            .json(&json!({ "subscribed": true, "ignored": false }))
+            .send()
+            .await
+            .with_context(|| format!("failed to subscribe to repository {full_name}"))?;
+
+        if response.status().is_success() {
+            return Ok(RepositorySubscriptionResult::Subscribed);
+        }
+
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        if status == StatusCode::FORBIDDEN && body.contains("Repository access blocked") {
+            return Ok(RepositorySubscriptionResult::Skipped {
+                reason: format!("{status}: {body}"),
+            });
+        }
+
+        anyhow::bail!("repository subscription request failed for {full_name}: {status}: {body}");
     }
 
     pub async fn poll_notifications(

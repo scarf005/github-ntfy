@@ -4,9 +4,12 @@ use anyhow::{Context, Result};
 use tracing::{error, info, warn};
 
 use crate::action;
+use crate::auto_watch::should_watch_repository;
 use crate::config::LoadedConfig;
 use crate::filter::{build_notification_facts, matching_block_rule};
-use crate::github::{GitHubClient, PullRequestDetails, Thread, TimelineEvent};
+use crate::github::{
+    GitHubClient, PullRequestDetails, RepositorySubscriptionResult, Thread, TimelineEvent,
+};
 use crate::ntfy::NtfyClient;
 use crate::render::render_notification;
 use crate::state::State;
@@ -79,6 +82,10 @@ impl App {
 
     pub async fn poll_once(&self) -> Result<Duration> {
         let mut state = State::load(&self.loaded.state_path)?;
+        if let Err(error) = self.auto_watch_repositories(&mut state).await {
+            warn!(error = %error, "auto-watch failed");
+        }
+        state.save(&self.loaded.state_path)?;
         let poll_result = self
             .github
             .poll_notifications(&self.loaded.config.github, state.last_modified.as_deref())
@@ -118,6 +125,61 @@ impl App {
             state = %self.loaded.state_path.display(),
             "GitHub notifications API and ntfy endpoint are reachable"
         );
+        Ok(())
+    }
+
+    async fn auto_watch_repositories(&self, state: &mut State) -> Result<()> {
+        if !self.loaded.config.auto_watch.enabled {
+            return Ok(());
+        }
+
+        let Some(current_user) = self.github.current_user().await? else {
+            warn!("skipping auto-watch because current GitHub login could not be resolved");
+            return Ok(());
+        };
+
+        let repositories = self
+            .github
+            .repositories_for_auto_watch(&self.loaded.config.github)
+            .await?;
+        let mut subscribed_count = 0usize;
+        let mut skipped_count = 0usize;
+
+        for repository in repositories.iter().filter(|repository| {
+            should_watch_repository(&self.loaded.config.auto_watch, repository, &current_user)
+        }) {
+            if state.has_auto_watched_repository(&repository.full_name) {
+                skipped_count += 1;
+                continue;
+            }
+
+            match self
+                .github
+                .subscribe_repository(&repository.full_name)
+                .await
+            {
+                Ok(RepositorySubscriptionResult::Subscribed) => {
+                    state.remember_auto_watched_repository(repository.full_name.clone());
+                    subscribed_count += 1;
+                }
+                Ok(RepositorySubscriptionResult::Skipped { reason }) => {
+                    warn!(
+                        reason,
+                        repo = %repository.full_name,
+                        "skipping repository subscription"
+                    );
+                    state.remember_auto_watched_repository(repository.full_name.clone());
+                    skipped_count += 1;
+                }
+                Err(error) => warn!(
+                    error = %error,
+                    repo = %repository.full_name,
+                    "failed to subscribe to repository"
+                ),
+            }
+        }
+
+        info!(subscribed_count, skipped_count, "auto-watch completed");
         Ok(())
     }
 

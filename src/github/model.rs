@@ -18,6 +18,20 @@ pub struct Repository {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+pub struct AutoWatchRepository {
+    pub full_name: String,
+    pub html_url: String,
+    pub archived: bool,
+    pub fork: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RepositorySubscriptionResult {
+    Subscribed,
+    Skipped { reason: String },
+}
+
+#[derive(Debug, Clone, Deserialize)]
 pub struct Owner {
     pub avatar_url: Option<String>,
 }

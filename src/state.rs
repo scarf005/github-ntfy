@@ -33,10 +33,14 @@ pub struct State {
     seen: VecDeque<String>,
     #[serde(default)]
     notifications: VecDeque<NotificationEntry>,
+    #[serde(default)]
+    auto_watched_repositories: VecDeque<String>,
     #[serde(skip)]
     seen_index: HashSet<String>,
     #[serde(skip)]
     notification_index: HashMap<String, Vec<String>>,
+    #[serde(skip)]
+    auto_watched_repository_index: HashSet<String>,
 }
 
 impl State {
@@ -51,6 +55,7 @@ impl State {
             .with_context(|| format!("failed to parse state: {}", path.display()))?;
         state.rebuild_seen_index();
         state.rebuild_notification_index();
+        state.rebuild_auto_watched_repository_index();
         Ok(state)
     }
 
@@ -126,6 +131,19 @@ impl State {
         }
     }
 
+    pub fn has_auto_watched_repository(&self, full_name: &str) -> bool {
+        self.auto_watched_repository_index.contains(full_name)
+    }
+
+    pub fn remember_auto_watched_repository(&mut self, full_name: String) {
+        if self.has_auto_watched_repository(&full_name) {
+            return;
+        }
+
+        self.auto_watched_repository_index.insert(full_name.clone());
+        self.auto_watched_repositories.push_back(full_name);
+    }
+
     pub fn remember_notification(
         &mut self,
         sequence_id: String,
@@ -164,6 +182,19 @@ impl State {
         }
         self.seen = deduped;
         self.seen_index = seen_index;
+    }
+
+    fn rebuild_auto_watched_repository_index(&mut self) {
+        let mut auto_watched_repository_index =
+            HashSet::with_capacity(self.auto_watched_repositories.len());
+        let mut deduped = VecDeque::with_capacity(self.auto_watched_repositories.len());
+        for full_name in self.auto_watched_repositories.drain(..) {
+            if auto_watched_repository_index.insert(full_name.clone()) {
+                deduped.push_back(full_name);
+            }
+        }
+        self.auto_watched_repositories = deduped;
+        self.auto_watched_repository_index = auto_watched_repository_index;
     }
 
     fn rebuild_notification_index(&mut self) {
@@ -243,6 +274,36 @@ mod tests {
 
         assert!(state.has_seen("one"));
         assert!(state.has_seen("two"));
+        fs::remove_file(path).expect("cleanup");
+    }
+
+    #[test]
+    fn remembers_auto_watched_repositories() {
+        let mut state = State::default();
+
+        state.remember_auto_watched_repository(String::from("alice/app"));
+        state.remember_auto_watched_repository(String::from("alice/app"));
+        state.remember_auto_watched_repository(String::from("alice/cli"));
+
+        assert!(state.has_auto_watched_repository("alice/app"));
+        assert!(state.has_auto_watched_repository("alice/cli"));
+    }
+
+    #[test]
+    fn rebuilds_auto_watch_index_when_loading_from_disk() {
+        let path = unique_test_path();
+        fs::write(
+            &path,
+            r#"{
+  "auto_watched_repositories": ["alice/app", "alice/app", "alice/cli"]
+}"#,
+        )
+        .expect("write state");
+
+        let state = State::load(&path).expect("state loaded");
+
+        assert!(state.has_auto_watched_repository("alice/app"));
+        assert!(state.has_auto_watched_repository("alice/cli"));
         fs::remove_file(path).expect("cleanup");
     }
 

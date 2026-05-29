@@ -3,6 +3,7 @@ token = "ghp_replace_me"
 # api_base = "https://api.github.com"
 # participating = false
 # per_page = 100
+# timeout_secs = 30
 # enrich_pull_requests = true
 
 [ntfy]
@@ -21,6 +22,11 @@ publish_url = "http://100.127.86.108:8080/github"
 # listen_addr = "0.0.0.0:8787"
 # public_base_url = "http://100.127.86.108:8787"
 # token = "replace-with-random-shared-secret"
+
+[auto_watch]
+# enabled = true
+# include = ["*/*"]
+# exclude = ["@me/noisy-*", "example-org/archive-*"]
 
 [filters]
 

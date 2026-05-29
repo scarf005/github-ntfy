@@ -9,6 +9,7 @@ Key components:
 
 - `app`: polling loop and orchestration
 - `config`: config loading and validation
+- `auto_watch`: repository subscription matching
 - `github`: GitHub REST and GraphQL clients
 - `ntfy`: `ntfy` publish client
 - `render`: notification title/body rendering
@@ -16,6 +17,7 @@ Key components:
 "#]
 
 pub mod app;
+pub mod auto_watch;
 pub mod config;
 pub mod filter;
 pub mod github;

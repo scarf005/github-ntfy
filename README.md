@@ -6,6 +6,7 @@ Self-hosted GitHub notification forwarder for `ntfy`.
 - PRs are enriched from GraphQL commit/timeline data and issues from GitHub timeline activity
 - Repeated updates for the same GitHub thread replace the existing `ntfy` notification
 - Optional `Done`, `Read`, and `Mute` action buttons can call back into the agent
+- New accessible repositories are watched automatically by default, with opt-out patterns
 - Rust config supports block rules such as repo/org/bot filters
 
 ## Why
@@ -49,6 +50,19 @@ System service:
 ```bash
 sudo systemctl enable --now github-ntfy-agent.service
 ```
+
+## Auto-watch
+
+GitHub no longer automatically watches newly accessible repositories. The agent restores that behavior by default and subscribes to matching repositories once.
+
+```toml
+[auto_watch]
+enabled = true
+include = ["*/*"]
+exclude = ["@me/noisy-*", "example-org/archive-*"]
+```
+
+`@me` expands to the authenticated GitHub login in include/exclude patterns.
 
 ## Filter rules
 

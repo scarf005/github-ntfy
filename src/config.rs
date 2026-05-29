@@ -14,6 +14,8 @@ pub struct Config {
     #[serde(default)]
     pub actions: ActionsConfig,
     #[serde(default)]
+    pub auto_watch: AutoWatchConfig,
+    #[serde(default)]
     pub filters: FiltersConfig,
 }
 
@@ -27,6 +29,8 @@ pub struct GitHubConfig {
     pub participating: bool,
     #[serde(default = "default_per_page")]
     pub per_page: u32,
+    #[serde(default = "default_timeout_secs")]
+    pub timeout_secs: u64,
     #[serde(default = "default_true")]
     pub enrich_pull_requests: bool,
     #[serde(default = "default_true")]
@@ -64,6 +68,16 @@ pub struct ActionsConfig {
     pub public_base_url: String,
     #[serde(default)]
     pub token: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct AutoWatchConfig {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default = "default_auto_watch_include")]
+    pub include: Vec<String>,
+    #[serde(default)]
+    pub exclude: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -112,6 +126,16 @@ impl Default for ActionsConfig {
             listen_addr: default_actions_listen_addr(),
             public_base_url: String::new(),
             token: String::new(),
+        }
+    }
+}
+
+impl Default for AutoWatchConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            include: default_auto_watch_include(),
+            exclude: Vec::new(),
         }
     }
 }
@@ -174,6 +198,9 @@ fn validate(config: &Config) -> Result<()> {
     if config.github.per_page == 0 || config.github.per_page > 100 {
         bail!("github.per_page must be between 1 and 100");
     }
+    if config.github.timeout_secs == 0 {
+        bail!("github.timeout_secs must be greater than zero");
+    }
     if config.app.poll_interval_secs == 0 {
         bail!("app.poll_interval_secs must be greater than zero");
     }
@@ -233,6 +260,10 @@ fn default_log_level() -> String {
 
 fn default_actions_listen_addr() -> String {
     String::from("127.0.0.1:8787")
+}
+
+fn default_auto_watch_include() -> Vec<String> {
+    vec![String::from("*/*")]
 }
 
 #[cfg(test)]
@@ -333,6 +364,30 @@ publish_url = ""
                 .to_string()
                 .contains("ntfy.publish_url must not be empty")
         );
+
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn auto_watch_is_enabled_by_default() {
+        let root = unique_test_path("auto-watch-default");
+        let config_path = root.join("config.toml");
+        write_config(
+            &config_path,
+            r#"
+[github]
+token = "ghp_test"
+
+[ntfy]
+publish_url = "https://ntfy.example/github"
+"#,
+        );
+
+        let loaded = LoadedConfig::load(Some(config_path.clone())).expect("loaded");
+
+        assert!(loaded.config.auto_watch.enabled);
+        assert_eq!(loaded.config.auto_watch.include, vec![String::from("*/*")]);
+        assert!(loaded.config.auto_watch.exclude.is_empty());
 
         fs::remove_dir_all(root).expect("cleanup");
     }
