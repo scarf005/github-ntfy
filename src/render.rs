@@ -114,6 +114,8 @@ fn enrich_pull_request(
     let message = if activity.kind == "commented" && reason != "mention" && reason != "team_mention"
     {
         format_comment_message(&actor, activity.detail.as_deref(), &summary)
+    } else if activity.kind == "closed" && !is_merged {
+        format_closed_message(&actor, activity.detail.as_deref(), &summary)
     } else {
         prepend_summary(&summary, activity.detail.as_deref())
     };
@@ -151,6 +153,8 @@ fn enrich_issue(
     let message = if activity.kind == "commented" && reason != "mention" && reason != "team_mention"
     {
         format_comment_message(&activity.actor, activity.detail.as_deref(), &summary)
+    } else if activity.kind == "closed" {
+        format_closed_message(&activity.actor, activity.detail.as_deref(), &summary)
     } else {
         prepend_summary(&summary, activity.detail.as_deref())
     };
@@ -164,6 +168,17 @@ fn format_comment_message(actor: &str, detail: Option<&str>, fallback: &str) -> 
         .filter(|detail| !detail.is_empty())
     {
         format!("@{}: {}", actor, detail)
+    } else {
+        String::from(fallback)
+    }
+}
+
+fn format_closed_message(actor: &str, detail: Option<&str>, fallback: &str) -> String {
+    if let Some(detail) = detail
+        .map(trim_multiline_text)
+        .filter(|detail| !detail.is_empty())
+    {
+        format!("@{} closed: {}", actor, detail)
     } else {
         String::from(fallback)
     }
@@ -712,6 +727,66 @@ mod tests {
     }
 
     #[test]
+    fn renders_pull_request_closed_comment_as_closed_prefix() {
+        let thread = sample_thread();
+        let timeline = vec![
+            TimelineEvent {
+                event: Some(String::from("commented")),
+                actor: Some(User {
+                    login: String::from("bar"),
+                    kind: None,
+                }),
+                user: None,
+                author: None,
+                committer: None,
+                assignee: None,
+                review_requester: None,
+                requested_reviewer: None,
+                requested_team: None,
+                label: None,
+                dismissed_review: None,
+                body: Some(String::from("Closing because this was fixed.")),
+                message: None,
+                commit: None,
+                state: None,
+                created_at: Some(String::from("2026-03-25T00:00:00Z")),
+                updated_at: None,
+                submitted_at: None,
+            },
+            TimelineEvent {
+                event: Some(String::from("closed")),
+                actor: Some(User {
+                    login: String::from("bar"),
+                    kind: None,
+                }),
+                user: None,
+                author: None,
+                committer: None,
+                assignee: None,
+                review_requester: None,
+                requested_reviewer: None,
+                requested_team: None,
+                label: None,
+                dismissed_review: None,
+                body: None,
+                message: None,
+                commit: None,
+                state: None,
+                created_at: Some(String::from("2026-03-25T00:01:00Z")),
+                updated_at: None,
+                submitted_at: None,
+            },
+        ];
+
+        let rendered = render_notification(&thread, None, Some(&timeline)).expect("rendered");
+
+        assert_eq!(
+            rendered.message,
+            "@bar closed: Closing because this was fixed."
+        );
+    }
+
+    #[test]
     fn renders_issue_closed_title_from_timeline() {
         let thread = sample_issue_thread();
         let timeline = vec![TimelineEvent {
@@ -741,6 +816,66 @@ mod tests {
         let rendered = render_notification(&thread, None, Some(&timeline)).expect("rendered");
         assert_eq!(rendered.title, "Issue title");
         assert_eq!(rendered.message, "@bar closed Issue title");
+    }
+
+    #[test]
+    fn renders_issue_closed_comment_as_closed_prefix() {
+        let thread = sample_issue_thread();
+        let timeline = vec![
+            TimelineEvent {
+                event: Some(String::from("commented")),
+                actor: Some(User {
+                    login: String::from("bar"),
+                    kind: None,
+                }),
+                user: None,
+                author: None,
+                committer: None,
+                assignee: None,
+                review_requester: None,
+                requested_reviewer: None,
+                requested_team: None,
+                label: None,
+                dismissed_review: None,
+                body: Some(String::from("Closing because this was fixed.")),
+                message: None,
+                commit: None,
+                state: None,
+                created_at: Some(String::from("2026-03-25T00:00:00Z")),
+                updated_at: None,
+                submitted_at: None,
+            },
+            TimelineEvent {
+                event: Some(String::from("closed")),
+                actor: Some(User {
+                    login: String::from("bar"),
+                    kind: None,
+                }),
+                user: None,
+                author: None,
+                committer: None,
+                requested_reviewer: None,
+                review_requester: None,
+                requested_team: None,
+                assignee: None,
+                label: None,
+                dismissed_review: None,
+                body: None,
+                message: None,
+                commit: None,
+                state: None,
+                created_at: Some(String::from("2026-03-25T00:01:00Z")),
+                updated_at: None,
+                submitted_at: None,
+            },
+        ];
+
+        let rendered = render_notification(&thread, None, Some(&timeline)).expect("rendered");
+
+        assert_eq!(
+            rendered.message,
+            "@bar closed: Closing because this was fixed."
+        );
     }
 
     #[test]

@@ -142,6 +142,15 @@ impl TimelineActivity {
                 detail: last.detail_text(),
                 commit_count: None,
             }),
+            "closed" => Some(Self {
+                kind: String::from("closed"),
+                detail: last
+                    .detail_text()
+                    .or_else(|| adjacent_closing_comment_detail(&events, last, &actor)),
+                actor,
+                actor_is_bot,
+                commit_count: None,
+            }),
             "assigned" => Some(Self {
                 kind: String::from("assigned"),
                 actor,
@@ -240,6 +249,24 @@ impl TimelineActivity {
                 commit_count: None,
             }),
         }
+    }
+}
+
+fn adjacent_closing_comment_detail(
+    events: &[&TimelineEvent],
+    closed: &TimelineEvent,
+    actor: &str,
+) -> Option<String> {
+    let previous = events
+        .iter()
+        .rev()
+        .skip_while(|event| !std::ptr::eq(**event, closed))
+        .nth(1)?;
+
+    if previous.event.as_deref() == Some("commented") && previous.actor_name() == actor {
+        previous.detail_text()
+    } else {
+        None
     }
 }
 
@@ -342,6 +369,58 @@ mod tests {
         assert_eq!(activity.kind, "review_requested");
         assert_eq!(activity.actor, "carol");
         assert_eq!(activity.detail.as_deref(), Some("Requested from @backend"));
+    }
+
+    #[test]
+    fn uses_adjacent_comment_as_closed_detail() {
+        let timeline = vec![
+            TimelineEvent {
+                event: Some(String::from("commented")),
+                actor: Some(user("alice", None)),
+                user: None,
+                author: None,
+                committer: None,
+                assignee: None,
+                review_requester: None,
+                requested_reviewer: None,
+                requested_team: None,
+                label: None,
+                dismissed_review: None,
+                body: Some(String::from("Fixed by #42.")),
+                message: None,
+                commit: None,
+                state: None,
+                created_at: Some(String::from("2026-03-24T00:00:00Z")),
+                updated_at: None,
+                submitted_at: None,
+            },
+            TimelineEvent {
+                event: Some(String::from("closed")),
+                actor: Some(user("alice", None)),
+                user: None,
+                author: None,
+                committer: None,
+                assignee: None,
+                review_requester: None,
+                requested_reviewer: None,
+                requested_team: None,
+                label: None,
+                dismissed_review: None,
+                body: None,
+                message: None,
+                commit: None,
+                state: None,
+                created_at: Some(String::from("2026-03-24T00:01:00Z")),
+                updated_at: None,
+                submitted_at: None,
+            },
+        ];
+
+        let activity = TimelineActivity::from_timeline(&timeline).expect("activity");
+
+        assert_eq!(activity.kind, "closed");
+        assert_eq!(activity.actor, "alice");
+        assert_eq!(activity.detail.as_deref(), Some("Fixed by #42."));
     }
 
     #[test]
