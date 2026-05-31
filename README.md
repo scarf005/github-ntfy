@@ -53,7 +53,7 @@ sudo systemctl enable --now github-ntfy-agent.service
 
 ## Auto-watch
 
-GitHub no longer automatically watches newly accessible repositories. The agent restores that behavior by default and subscribes to matching repositories once.
+GitHub no longer automatically watches newly accessible repositories. The agent restores that behavior by default for repositories that appear after its first auto-watch scan. On the first scan it records current matching repositories as a baseline without changing their existing notification settings.
 
 ```toml
 [auto_watch]
@@ -62,7 +62,7 @@ include = ["*/*"]
 exclude = ["@me/noisy-*", "example-org/archive-*"]
 ```
 
-`@me` expands to the authenticated GitHub login in include/exclude patterns.
+`@me` expands to the authenticated GitHub login in include/exclude patterns. Existing explicit repository subscription settings are skipped instead of overwritten.
 
 ## Filter rules
 

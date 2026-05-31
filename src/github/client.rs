@@ -464,6 +464,27 @@ impl GitHubClient {
         &self,
         full_name: &str,
     ) -> Result<RepositorySubscriptionResult> {
+        let existing = self
+            .client
+            .get(self.endpoint(&format!("/repos/{full_name}/subscription"))?)
+            .headers(self.headers()?)
+            .send()
+            .await
+            .with_context(|| format!("failed to check repository subscription {full_name}"))?;
+
+        match existing.status() {
+            StatusCode::OK => {
+                return Ok(RepositorySubscriptionResult::Skipped {
+                    reason: String::from("repository already has an explicit subscription setting"),
+                });
+            }
+            StatusCode::NOT_FOUND => {}
+            status => {
+                let body = existing.text().await.unwrap_or_default();
+                return skipped_or_error(full_name, status, body);
+            }
+        }
+
         let response = self
             .client
             .put(self.endpoint(&format!("/repos/{full_name}/subscription"))?)
@@ -479,13 +500,7 @@ impl GitHubClient {
 
         let status = response.status();
         let body = response.text().await.unwrap_or_default();
-        if status == StatusCode::FORBIDDEN && body.contains("Repository access blocked") {
-            return Ok(RepositorySubscriptionResult::Skipped {
-                reason: format!("{status}: {body}"),
-            });
-        }
-
-        anyhow::bail!("repository subscription request failed for {full_name}: {status}: {body}");
+        skipped_or_error(full_name, status, body)
     }
 
     pub async fn poll_notifications(
@@ -725,6 +740,20 @@ impl GitHubClient {
             .join(path.trim_start_matches('/'))
             .with_context(|| format!("failed to build GitHub endpoint for {path}"))
     }
+}
+
+fn skipped_or_error(
+    full_name: &str,
+    status: StatusCode,
+    body: String,
+) -> Result<RepositorySubscriptionResult> {
+    if status == StatusCode::FORBIDDEN && body.contains("Repository access blocked") {
+        return Ok(RepositorySubscriptionResult::Skipped {
+            reason: format!("{status}: {body}"),
+        });
+    }
+
+    anyhow::bail!("repository subscription request failed for {full_name}: {status}: {body}");
 }
 
 fn parse_poll_interval(headers: &HeaderMap) -> Option<u64> {

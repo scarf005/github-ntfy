@@ -142,12 +142,30 @@ impl App {
             .github
             .repositories_for_auto_watch(&self.loaded.config.github)
             .await?;
+        let matching_repositories = repositories
+            .iter()
+            .filter(|repository| {
+                should_watch_repository(&self.loaded.config.auto_watch, repository, &current_user)
+            })
+            .collect::<Vec<_>>();
+
+        if !state.is_auto_watch_initialized() {
+            let baselined_count = matching_repositories.len();
+            for repository in matching_repositories {
+                state.remember_auto_watched_repository(repository.full_name.clone());
+            }
+            state.mark_auto_watch_initialized();
+            info!(
+                baselined_count,
+                "auto-watch baseline recorded without changing existing repository settings"
+            );
+            return Ok(());
+        }
+
         let mut subscribed_count = 0usize;
         let mut skipped_count = 0usize;
 
-        for repository in repositories.iter().filter(|repository| {
-            should_watch_repository(&self.loaded.config.auto_watch, repository, &current_user)
-        }) {
+        for repository in matching_repositories {
             if state.has_auto_watched_repository(&repository.full_name) {
                 skipped_count += 1;
                 continue;

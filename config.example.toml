@@ -24,6 +24,7 @@ publish_url = "http://100.127.86.108:8080/github"
 # token = "replace-with-random-shared-secret"
 
 [auto_watch]
+# Existing matching repositories are baselined on first run without changing settings.
 # enabled = true
 # include = ["*/*"]
 # exclude = ["@me/noisy-*", "example-org/archive-*"]

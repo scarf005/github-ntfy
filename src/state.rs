@@ -34,6 +34,8 @@ pub struct State {
     #[serde(default)]
     notifications: VecDeque<NotificationEntry>,
     #[serde(default)]
+    auto_watch_initialized: bool,
+    #[serde(default)]
     auto_watched_repositories: VecDeque<String>,
     #[serde(skip)]
     seen_index: HashSet<String>,
@@ -129,6 +131,14 @@ impl State {
             had_existing: true,
             inserted_new_block: true,
         }
+    }
+
+    pub fn is_auto_watch_initialized(&self) -> bool {
+        self.auto_watch_initialized
+    }
+
+    pub fn mark_auto_watch_initialized(&mut self) {
+        self.auto_watch_initialized = true;
     }
 
     pub fn has_auto_watched_repository(&self, full_name: &str) -> bool {
@@ -278,6 +288,17 @@ mod tests {
     }
 
     #[test]
+    fn tracks_auto_watch_initialization() {
+        let mut state = State::default();
+
+        assert!(!state.is_auto_watch_initialized());
+
+        state.mark_auto_watch_initialized();
+
+        assert!(state.is_auto_watch_initialized());
+    }
+
+    #[test]
     fn remembers_auto_watched_repositories() {
         let mut state = State::default();
 
@@ -295,6 +316,7 @@ mod tests {
         fs::write(
             &path,
             r#"{
+  "auto_watch_initialized": true,
   "auto_watched_repositories": ["alice/app", "alice/app", "alice/cli"]
 }"#,
         )
@@ -302,6 +324,7 @@ mod tests {
 
         let state = State::load(&path).expect("state loaded");
 
+        assert!(state.is_auto_watch_initialized());
         assert!(state.has_auto_watched_repository("alice/app"));
         assert!(state.has_auto_watched_repository("alice/cli"));
         fs::remove_file(path).expect("cleanup");
