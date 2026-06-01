@@ -80,10 +80,8 @@ fn enrich_pull_request(
         return (String::from(base_title), String::from(base_message));
     };
 
-    let merged_by =
-        pull_request.and_then(|pull| pull.merged_by.as_ref().map(|user| user.login.clone()));
     let is_merged = pull_request.is_some_and(|pull| pull.merged);
-    let actor = merged_by.unwrap_or_else(|| activity.actor.clone());
+    let actor = pull_request_actor(pull_request, &activity);
 
     let summary = match activity.kind.as_str() {
         "review_approved" => format!("@{} approved", actor),
@@ -121,6 +119,21 @@ fn enrich_pull_request(
     };
 
     (String::from(base_title), message)
+}
+
+fn pull_request_actor(
+    pull_request: Option<&PullRequestDetails>,
+    activity: &TimelineActivity,
+) -> String {
+    if activity.kind == "merged"
+        || activity.kind == "closed" && pull_request.is_some_and(|pull| pull.merged)
+    {
+        return pull_request
+            .and_then(|pull| pull.merged_by.as_ref().map(|user| user.login.clone()))
+            .unwrap_or_else(|| activity.actor.clone());
+    }
+
+    activity.actor.clone()
 }
 
 fn enrich_issue(
@@ -609,6 +622,49 @@ mod tests {
         assert_eq!(
             rendered.message,
             "@narkiel: Encountered same bug when grab/dragging a Warehouse shelf with a bunch of stuff on it"
+        );
+    }
+
+    #[test]
+    fn renders_merged_pull_request_comment_with_commenter_actor() {
+        let thread = sample_thread();
+        let pull_request = PullRequestDetails {
+            merged: true,
+            merged_by: Some(User {
+                login: String::from("dedmemdev"),
+                kind: None,
+            }),
+        };
+        let timeline = vec![TimelineEvent {
+            event: Some(String::from("commented")),
+            actor: Some(User {
+                login: String::from("Worom"),
+                kind: None,
+            }),
+            user: None,
+            author: None,
+            committer: None,
+            assignee: None,
+            review_requester: None,
+            requested_reviewer: None,
+            requested_team: None,
+            label: None,
+            dismissed_review: None,
+            body: Some(String::from("I take full responsibility for this mistake")),
+            message: None,
+            commit: None,
+            state: None,
+            created_at: Some(String::from("2026-06-01T08:23:47Z")),
+            updated_at: None,
+            submitted_at: None,
+        }];
+
+        let rendered =
+            render_notification(&thread, Some(&pull_request), Some(&timeline)).expect("rendered");
+
+        assert_eq!(
+            rendered.message,
+            "@Worom: I take full responsibility for this mistake"
         );
     }
 
