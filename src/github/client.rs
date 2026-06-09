@@ -37,6 +37,7 @@ query PullRequestEnrichment($owner: String!, $name: String!, $number: Int!) {
           ISSUE_COMMENT
           REVIEW_REQUESTED_EVENT
           REVIEW_REQUEST_REMOVED_EVENT
+          REVIEW_DISMISSED_EVENT
           MERGED_EVENT
           CLOSED_EVENT
           REOPENED_EVENT
@@ -101,6 +102,14 @@ query PullRequestEnrichment($owner: String!, $name: String!, $number: Int!) {
               ... on Bot { login }
               ... on Team { slug }
             }
+            createdAt
+          }
+          ... on ReviewDismissedEvent {
+            actor {
+              __typename
+              login
+            }
+            dismissalMessage
             createdAt
           }
           ... on MergedEvent {
@@ -268,6 +277,13 @@ enum GraphQlTimelineItem {
         actor: Option<GraphQlActor>,
         #[serde(rename = "requestedReviewer")]
         requested_reviewer: Option<GraphQlRequestedReviewer>,
+        #[serde(rename = "createdAt")]
+        created_at: String,
+    },
+    ReviewDismissedEvent {
+        actor: Option<GraphQlActor>,
+        #[serde(rename = "dismissalMessage")]
+        dismissal_message: Option<String>,
         #[serde(rename = "createdAt")]
         created_at: String,
     },
@@ -917,6 +933,32 @@ fn graphql_timeline_event(item: &GraphQlTimelineItem) -> TimelineEvent {
             updated_at: None,
             submitted_at: None,
         },
+        GraphQlTimelineItem::ReviewDismissedEvent {
+            actor,
+            dismissal_message,
+            created_at,
+        } => TimelineEvent {
+            event: Some(String::from("review_dismissed")),
+            actor: actor.clone().map(graphql_actor_to_user),
+            user: None,
+            author: None,
+            committer: None,
+            assignee: None,
+            review_requester: None,
+            requested_reviewer: None,
+            requested_team: None,
+            label: None,
+            dismissed_review: Some(super::model::DismissedReview {
+                dismissal_message: dismissal_message.clone(),
+            }),
+            body: None,
+            message: None,
+            commit: None,
+            state: None,
+            created_at: Some(created_at.clone()),
+            updated_at: None,
+            submitted_at: None,
+        },
         GraphQlTimelineItem::MergedEvent { actor, created_at } => simple_timeline_event(
             "merged",
             actor.clone().map(graphql_actor_to_user),
@@ -1182,6 +1224,31 @@ mod tests {
         assert_eq!(subject.owner, "cataclysmbn");
         assert_eq!(subject.repo, "Cataclysm-BN");
         assert_eq!(subject.number, 8404);
+    }
+
+    #[test]
+    fn converts_graphql_review_dismissal_to_timeline_event() {
+        let event = graphql_timeline_event(&GraphQlTimelineItem::ReviewDismissedEvent {
+            actor: Some(GraphQlActor {
+                kind: String::from("User"),
+                login: String::from("chaosvolt"),
+            }),
+            dismissal_message: Some(String::from("one more test soonmish")),
+            created_at: String::from("2026-06-09T06:46:03Z"),
+        });
+
+        assert_eq!(event.event.as_deref(), Some("review_dismissed"));
+        assert_eq!(
+            event.actor.as_ref().map(|user| user.login.as_str()),
+            Some("chaosvolt")
+        );
+        assert_eq!(
+            event
+                .dismissed_review
+                .as_ref()
+                .and_then(|review| review.dismissal_message.as_deref()),
+            Some("one more test soonmish")
+        );
     }
 
     #[test]

@@ -114,6 +114,8 @@ fn enrich_pull_request(
         format_comment_message(&actor, activity.detail.as_deref(), &summary)
     } else if activity.kind == "closed" && !is_merged {
         format_closed_message(&actor, activity.detail.as_deref(), &summary)
+    } else if activity.kind == "review_dismissed" {
+        format_review_dismissed_message(&actor, activity.detail.as_deref(), &summary)
     } else {
         prepend_summary(&summary, activity.detail.as_deref())
     };
@@ -192,6 +194,17 @@ fn format_closed_message(actor: &str, detail: Option<&str>, fallback: &str) -> S
         .filter(|detail| !detail.is_empty())
     {
         format!("@{} closed: {}", actor, detail)
+    } else {
+        String::from(fallback)
+    }
+}
+
+fn format_review_dismissed_message(actor: &str, detail: Option<&str>, fallback: &str) -> String {
+    if let Some(detail) = detail
+        .map(trim_multiline_text)
+        .filter(|detail| !detail.is_empty())
+    {
+        format!("@{} dismissed review: {}", actor, detail)
     } else {
         String::from(fallback)
     }
@@ -369,7 +382,8 @@ fn priority(thread: &Thread) -> u8 {
 mod tests {
     use super::*;
     use crate::github::{
-        Label, Owner, PullRequestDetails, Repository, Subject, Thread, TimelineEvent, User,
+        DismissedReview, Label, Owner, PullRequestDetails, Repository, Subject, Thread,
+        TimelineEvent, User,
     };
 
     fn sample_thread() -> Thread {
@@ -545,6 +559,43 @@ mod tests {
         assert_eq!(
             rendered.message,
             "@chaosvolt reviewed\nCould you split this into a helper?"
+        );
+    }
+
+    #[test]
+    fn renders_review_dismissal_message_inline() {
+        let thread = sample_thread();
+        let timeline = vec![TimelineEvent {
+            event: Some(String::from("review_dismissed")),
+            actor: Some(User {
+                login: String::from("chaosvolt"),
+                kind: None,
+            }),
+            user: None,
+            author: None,
+            committer: None,
+            assignee: None,
+            review_requester: None,
+            requested_reviewer: None,
+            requested_team: None,
+            label: None,
+            dismissed_review: Some(DismissedReview {
+                dismissal_message: Some(String::from("one more test soonmish")),
+            }),
+            body: None,
+            message: None,
+            commit: None,
+            state: None,
+            created_at: Some(String::from("2026-06-09T06:46:03Z")),
+            updated_at: None,
+            submitted_at: None,
+        }];
+
+        let rendered = render_notification(&thread, None, Some(&timeline)).expect("rendered");
+
+        assert_eq!(
+            rendered.message,
+            "@chaosvolt dismissed review: one more test soonmish"
         );
     }
 
