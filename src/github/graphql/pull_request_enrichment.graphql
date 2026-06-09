@@ -1,0 +1,191 @@
+query PullRequestEnrichment($owner: String!, $name: String!, $number: Int!) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) {
+      merged
+      body
+      mergedBy {
+        __typename
+        login
+      }
+      timelineItems(
+        last: 20
+        itemTypes: [
+          PULL_REQUEST_REVIEW
+          ISSUE_COMMENT
+          REVIEW_REQUESTED_EVENT
+          REVIEW_REQUEST_REMOVED_EVENT
+          REVIEW_DISMISSED_EVENT
+          MERGED_EVENT
+          CLOSED_EVENT
+          REOPENED_EVENT
+          READY_FOR_REVIEW_EVENT
+          CONVERT_TO_DRAFT_EVENT
+          LABELED_EVENT
+          UNLABELED_EVENT
+          ASSIGNED_EVENT
+          UNASSIGNED_EVENT
+        ]
+      ) {
+        nodes {
+          __typename
+          ... on PullRequestReview {
+            state
+            author {
+              __typename
+              login
+            }
+            body
+            comments(last: 10) {
+              nodes {
+                author {
+                  __typename
+                  login
+                }
+                body
+                createdAt
+              }
+            }
+            createdAt
+          }
+          ... on IssueComment {
+            author {
+              __typename
+              login
+            }
+            body
+            createdAt
+          }
+          ... on ReviewRequestedEvent {
+            actor {
+              __typename
+              login
+            }
+            requestedReviewer {
+              __typename
+              ... on User { login }
+              ... on Bot { login }
+              ... on Team { slug }
+            }
+            createdAt
+          }
+          ... on ReviewRequestRemovedEvent {
+            actor {
+              __typename
+              login
+            }
+            requestedReviewer {
+              __typename
+              ... on User { login }
+              ... on Bot { login }
+              ... on Team { slug }
+            }
+            createdAt
+          }
+          ... on ReviewDismissedEvent {
+            actor {
+              __typename
+              login
+            }
+            dismissalMessage
+            createdAt
+          }
+          ... on MergedEvent {
+            actor {
+              __typename
+              login
+            }
+            createdAt
+          }
+          ... on ClosedEvent {
+            actor {
+              __typename
+              login
+            }
+            createdAt
+          }
+          ... on ReopenedEvent {
+            actor {
+              __typename
+              login
+            }
+            createdAt
+          }
+          ... on ReadyForReviewEvent {
+            actor {
+              __typename
+              login
+            }
+            createdAt
+          }
+          ... on ConvertToDraftEvent {
+            actor {
+              __typename
+              login
+            }
+            createdAt
+          }
+          ... on LabeledEvent {
+            actor {
+              __typename
+              login
+            }
+            label { name }
+            createdAt
+          }
+          ... on UnlabeledEvent {
+            actor {
+              __typename
+              login
+            }
+            label { name }
+            createdAt
+          }
+          ... on AssignedEvent {
+            actor {
+              __typename
+              login
+            }
+            assignee {
+              __typename
+              ... on User { login }
+              ... on Bot { login }
+              ... on Mannequin { login }
+              ... on Organization { login }
+            }
+            createdAt
+          }
+          ... on UnassignedEvent {
+            actor {
+              __typename
+              login
+            }
+            assignee {
+              __typename
+              ... on User { login }
+              ... on Bot { login }
+              ... on Mannequin { login }
+              ... on Organization { login }
+            }
+            createdAt
+          }
+        }
+      }
+      commits(last: 10) {
+        nodes {
+          commit {
+            messageHeadline
+            authoredDate
+            author {
+              name
+              user { login }
+            }
+            committer {
+              name
+              user { login }
+            }
+          }
+        }
+      }
+    }
+  }
+}
