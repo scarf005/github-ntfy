@@ -52,6 +52,7 @@ pub fn render_notification(
         Some("Issue") => enrich_issue(&base_title, &base_message, reason, timeline),
         _ => (base_title, base_message),
     };
+    let title = title_with_subject_number(thread, &title);
 
     Ok(RenderedNotification {
         dedupe_key: format!("{}|{}", thread.id, thread.updated_at),
@@ -223,6 +224,35 @@ fn prepend_summary(summary: &str, detail: Option<&str>) -> String {
     } else {
         String::from(summary)
     }
+}
+
+fn title_with_subject_number(thread: &Thread, title: &str) -> String {
+    let Some(number) = subject_number(thread) else {
+        return String::from(title);
+    };
+    let issue_reference = format!("#{number}");
+    if title.contains(&issue_reference) {
+        String::from(title)
+    } else {
+        format!("{title} ({issue_reference})")
+    }
+}
+
+fn subject_number(thread: &Thread) -> Option<String> {
+    let markers: &[&str] = match thread.subject.kind.as_deref() {
+        Some("PullRequest") => &["/pulls/", "/pull/"],
+        Some("Issue") => &["/issues/"],
+        _ => return None,
+    };
+    let subject_url = thread.subject.url.as_deref()?;
+    markers.iter().find_map(|marker| {
+        let (_, tail) = subject_url.split_once(marker)?;
+        let number = tail
+            .split(['/', '?', '#'])
+            .next()
+            .filter(|number| !number.is_empty() && number.chars().all(|ch| ch.is_ascii_digit()))?;
+        Some(String::from(number))
+    })
 }
 
 fn base_message(thread: &Thread) -> String {
@@ -441,7 +471,18 @@ mod tests {
         let rendered = render_notification(&sample_thread(), None, None).expect("rendered");
         assert_eq!(rendered.click_url, "https://github.com/octo/repo/pull/42");
         assert_eq!(rendered.sequence_id, "https-github-com-octo-repo-pull-42");
+        assert_eq!(rendered.title, "Fix pull link (#42)");
         assert_eq!(rendered.message, "Pull request update in octo/repo");
+    }
+
+    #[test]
+    fn keeps_existing_issue_reference_in_title() {
+        let mut thread = sample_thread();
+        thread.subject.title = Some(String::from("Fix pull link #42"));
+
+        let rendered = render_notification(&thread, None, None).expect("rendered");
+
+        assert_eq!(rendered.title, "Fix pull link #42");
     }
 
     #[test]
@@ -484,7 +525,7 @@ mod tests {
         }];
 
         let rendered = render_notification(&thread, None, Some(&timeline)).expect("rendered");
-        assert_eq!(rendered.title, "Fix pull link");
+        assert_eq!(rendered.title, "Fix pull link (#42)");
         assert!(rendered.message.starts_with("@foo pushed 1 commit\n"));
         assert!(rendered.message.contains("feat: improve notifier"));
         assert!(
@@ -782,7 +823,7 @@ mod tests {
         }];
 
         let rendered = render_notification(&thread, None, Some(&timeline)).expect("rendered");
-        assert_eq!(rendered.title, "Issue title");
+        assert_eq!(rendered.title, "Issue title (#7)");
         assert!(
             rendered
                 .message
@@ -921,7 +962,7 @@ mod tests {
         }];
 
         let rendered = render_notification(&thread, None, Some(&timeline)).expect("rendered");
-        assert_eq!(rendered.title, "Issue title");
+        assert_eq!(rendered.title, "Issue title (#7)");
         assert_eq!(rendered.message, "@bar closed Issue title");
     }
 
@@ -1015,7 +1056,7 @@ mod tests {
         }];
 
         let rendered = render_notification(&thread, None, Some(&timeline)).expect("rendered");
-        assert_eq!(rendered.title, "Issue title");
+        assert_eq!(rendered.title, "Issue title (#7)");
         assert!(rendered.message.starts_with("@bar labeled Issue title\n"));
         assert!(rendered.message.contains("Added label: bug"));
         assert!(!rendered.message.contains("Issue update in octo/repo"));
