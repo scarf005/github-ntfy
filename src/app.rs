@@ -11,7 +11,7 @@ use crate::github::{
     GitHubClient, PullRequestDetails, RepositorySubscriptionResult, Thread, TimelineEvent,
 };
 use crate::ntfy::NtfyClient;
-use crate::render::render_notification;
+use crate::render::{render_initial_subject_notification, render_notification};
 use crate::state::{NotificationMerge, State};
 
 pub struct App {
@@ -217,7 +217,10 @@ impl App {
         if matching_block_rule(&self.loaded.config.filters, &facts)
             .is_some_and(|rule| should_send_initial_subject_notification(rule, &merge, thread))
         {
-            rendered = render_notification(thread, pull_request.as_ref(), None)?;
+            let body = self
+                .initial_subject_body(thread, pull_request.as_ref())
+                .await;
+            rendered = render_initial_subject_notification(thread, body.as_deref())?;
             rendered.actions =
                 action::notification_actions(&self.loaded.config.actions, &thread.id);
             facts = build_notification_facts(thread, pull_request.as_ref(), None);
@@ -257,6 +260,37 @@ impl App {
         );
         state.mark_seen(rendered.dedupe_key, self.loaded.config.app.max_seen);
         Ok(true)
+    }
+
+    async fn initial_subject_body(
+        &self,
+        thread: &Thread,
+        pull_request: Option<&PullRequestDetails>,
+    ) -> Option<String> {
+        if let Some(body) = pull_request.and_then(|pull_request| pull_request.body.clone()) {
+            return Some(body);
+        }
+
+        if !matches!(
+            thread.subject.kind.as_deref(),
+            Some("PullRequest" | "Issue")
+        ) {
+            return None;
+        }
+
+        let subject_url = thread.subject.url.as_deref()?;
+        match self.github.subject_details(subject_url).await {
+            Ok(details) => details.body,
+            Err(error) => {
+                warn!(
+                    error = %error,
+                    repo = %thread.repository.full_name,
+                    subject = %thread.subject.title.as_deref().unwrap_or("unknown"),
+                    "failed to fetch initial subject body"
+                );
+                None
+            }
+        }
     }
 
     async fn enrich_thread(

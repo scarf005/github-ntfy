@@ -4,6 +4,7 @@ use crate::github::{PullRequestDetails, Thread, TimelineActivity, TimelineEvent}
 
 const DEFAULT_ICON_URL: &str =
     "https://github.githubassets.com/images/modules/logos_page/GitHub-Mark.png";
+const MAX_INITIAL_BODY_CHARS: usize = 1800;
 
 struct NotificationIdentity {
     click_url: String,
@@ -28,21 +29,8 @@ pub fn render_notification(
     pull_request: Option<&PullRequestDetails>,
     timeline: Option<&[TimelineEvent]>,
 ) -> Result<RenderedNotification> {
-    let base_title = thread
-        .subject
-        .title
-        .clone()
-        .unwrap_or_else(|| thread.repository.full_name.clone());
+    let base_title = notification_title(thread);
     let base_message = base_message(thread);
-    let identity = notification_identity(thread);
-    let icon_url = thread
-        .repository
-        .owner
-        .as_ref()
-        .and_then(|owner| owner.avatar_url.clone())
-        .unwrap_or_else(|| String::from(DEFAULT_ICON_URL));
-    let tags = build_tags(thread);
-    let priority = priority(thread);
     let reason = thread.reason.as_deref().unwrap_or("notification");
 
     let (title, message) = match thread.subject.kind.as_deref() {
@@ -52,19 +40,52 @@ pub fn render_notification(
         Some("Issue") => enrich_issue(&base_title, &base_message, reason, timeline),
         _ => (base_title, base_message),
     };
-    let title = title_with_subject_number(thread, &title);
 
-    Ok(RenderedNotification {
+    Ok(rendered_notification(thread, title, message))
+}
+
+pub fn render_initial_subject_notification(
+    thread: &Thread,
+    body: Option<&str>,
+) -> Result<RenderedNotification> {
+    let fallback = base_message(thread);
+    Ok(rendered_notification(
+        thread,
+        notification_title(thread),
+        initial_subject_message(body, &fallback),
+    ))
+}
+
+fn rendered_notification(thread: &Thread, title: String, message: String) -> RenderedNotification {
+    let identity = notification_identity(thread);
+    RenderedNotification {
         dedupe_key: format!("{}|{}", thread.id, thread.updated_at),
         sequence_id: identity.sequence_id,
-        title,
+        title: title_with_subject_number(thread, &title),
         message,
         actions: None,
         click_url: identity.click_url,
-        icon_url,
-        tags,
-        priority,
-    })
+        icon_url: icon_url(thread),
+        tags: build_tags(thread),
+        priority: priority(thread),
+    }
+}
+
+fn notification_title(thread: &Thread) -> String {
+    thread
+        .subject
+        .title
+        .clone()
+        .unwrap_or_else(|| thread.repository.full_name.clone())
+}
+
+fn icon_url(thread: &Thread) -> String {
+    thread
+        .repository
+        .owner
+        .as_ref()
+        .and_then(|owner| owner.avatar_url.clone())
+        .unwrap_or_else(|| String::from(DEFAULT_ICON_URL))
 }
 
 fn enrich_pull_request(
@@ -179,36 +200,23 @@ fn enrich_issue(
 }
 
 fn format_comment_message(actor: &str, detail: Option<&str>, fallback: &str) -> String {
-    if let Some(detail) = detail
-        .map(trim_multiline_text)
-        .filter(|detail| !detail.is_empty())
-    {
-        format!("@{}: {}", actor, detail)
-    } else {
-        String::from(fallback)
-    }
+    format_detail(&format!("@{actor}: "), detail, fallback)
 }
 
 fn format_closed_message(actor: &str, detail: Option<&str>, fallback: &str) -> String {
-    if let Some(detail) = detail
-        .map(trim_multiline_text)
-        .filter(|detail| !detail.is_empty())
-    {
-        format!("@{} closed: {}", actor, detail)
-    } else {
-        String::from(fallback)
-    }
+    format_detail(&format!("@{actor} closed: "), detail, fallback)
 }
 
 fn format_review_dismissed_message(actor: &str, detail: Option<&str>, fallback: &str) -> String {
-    if let Some(detail) = detail
+    format_detail(&format!("@{actor} dismissed review: "), detail, fallback)
+}
+
+fn format_detail(prefix: &str, detail: Option<&str>, fallback: &str) -> String {
+    detail
         .map(trim_multiline_text)
         .filter(|detail| !detail.is_empty())
-    {
-        format!("@{} dismissed review: {}", actor, detail)
-    } else {
-        String::from(fallback)
-    }
+        .map(|detail| format!("{prefix}{detail}"))
+        .unwrap_or_else(|| String::from(fallback))
 }
 
 fn prepend_summary(summary: &str, detail: Option<&str>) -> String {
@@ -255,47 +263,65 @@ fn subject_number(thread: &Thread) -> Option<String> {
     })
 }
 
+fn initial_subject_message(body: Option<&str>, fallback: &str) -> String {
+    body.map(format_initial_body)
+        .filter(|body| !body.is_empty())
+        .unwrap_or_else(|| String::from(fallback))
+}
+
+fn format_initial_body(body: &str) -> String {
+    truncate_chars(
+        &trim_multiline_text(&strip_html_comments(body)),
+        MAX_INITIAL_BODY_CHARS,
+    )
+}
+
+fn strip_html_comments(input: &str) -> String {
+    let mut output = String::with_capacity(input.len());
+    let mut tail = input;
+
+    while let Some(start) = tail.find("<!--") {
+        output.push_str(&tail[..start]);
+        let comment_tail = &tail[start + 4..];
+        let Some(end) = comment_tail.find("-->") else {
+            return output;
+        };
+        tail = &comment_tail[end + 3..];
+    }
+
+    output.push_str(tail);
+    output
+}
+
+fn truncate_chars(input: &str, max_chars: usize) -> String {
+    if input.chars().count() <= max_chars {
+        return String::from(input);
+    }
+
+    let keep_chars = max_chars.saturating_sub(1);
+    let mut truncated = input.chars().take(keep_chars).collect::<String>();
+    truncated.push('…');
+    truncated
+}
+
 fn base_message(thread: &Thread) -> String {
     let repo = &thread.repository.full_name;
     let subject = subject_label(thread.subject.kind.as_deref());
+    let lower = subject.to_ascii_lowercase();
 
     match thread.reason.as_deref() {
         Some("assign") => format!("{subject} assigned to you in {repo}"),
-        Some("author") => format!(
-            "Activity on your {subject_lower} in {repo}",
-            subject_lower = subject.to_ascii_lowercase()
-        ),
-        Some("comment") => format!(
-            "New comment on {subject_lower} in {repo}",
-            subject_lower = subject.to_ascii_lowercase()
-        ),
-        Some("ci_activity") => format!(
-            "CI activity on {subject_lower} in {repo}",
-            subject_lower = subject.to_ascii_lowercase()
-        ),
-        Some("invitation") => format!(
-            "Invitation for {subject_lower} in {repo}",
-            subject_lower = subject.to_ascii_lowercase()
-        ),
-        Some("manual") => format!(
-            "Manual notification for {subject_lower} in {repo}",
-            subject_lower = subject.to_ascii_lowercase()
-        ),
-        Some("mention") => format!(
-            "Mentioned you in {subject_lower} in {repo}",
-            subject_lower = subject.to_ascii_lowercase()
-        ),
-        Some("review_requested") => format!(
-            "Review requested on {subject_lower} in {repo}",
-            subject_lower = subject.to_ascii_lowercase()
-        ),
+        Some("author") => format!("Activity on your {lower} in {repo}"),
+        Some("comment") => format!("New comment on {lower} in {repo}"),
+        Some("ci_activity") => format!("CI activity on {lower} in {repo}"),
+        Some("invitation") => format!("Invitation for {lower} in {repo}"),
+        Some("manual") => format!("Manual notification for {lower} in {repo}"),
+        Some("mention") => format!("Mentioned you in {lower} in {repo}"),
+        Some("review_requested") => format!("Review requested on {lower} in {repo}"),
         Some("security_alert") => format!("Security alert in {repo}"),
         Some("state_change") => format!("{subject} state changed in {repo}"),
         Some("subscribed") => format!("{subject} update in {repo}"),
-        Some("team_mention") => format!(
-            "Mentioned your team in {subject_lower} in {repo}",
-            subject_lower = subject.to_ascii_lowercase()
-        ),
+        Some("team_mention") => format!("Mentioned your team in {lower} in {repo}"),
         Some(reason) => format!("{subject} notification ({reason}) in {repo}"),
         None => format!("{subject} notification in {repo}"),
     }
@@ -441,6 +467,22 @@ mod tests {
         }
     }
 
+    fn user(login: &str) -> User {
+        User {
+            login: String::from(login),
+            kind: None,
+        }
+    }
+
+    fn event(kind: &str, actor: &str) -> TimelineEvent {
+        TimelineEvent {
+            event: Some(String::from(kind)),
+            actor: Some(user(actor)),
+            created_at: Some(String::from("2026-03-25T00:00:00Z")),
+            ..TimelineEvent::default()
+        }
+    }
+
     fn sample_issue_thread() -> Thread {
         Thread {
             id: String::from("2"),
@@ -486,6 +528,49 @@ mod tests {
     }
 
     #[test]
+    fn renders_initial_subject_body() {
+        let rendered = render_initial_subject_notification(
+            &sample_thread(),
+            Some("\n  First paragraph.\n\n  Second paragraph.\n"),
+        )
+        .expect("rendered");
+
+        assert_eq!(rendered.title, "Fix pull link (#42)");
+        assert_eq!(rendered.message, "First paragraph.\nSecond paragraph.");
+    }
+
+    #[test]
+    fn removes_html_comments_from_initial_subject_body() {
+        let rendered = render_initial_subject_notification(
+            &sample_thread(),
+            Some("Visible intro\n<!-- template hint\nthat should stay hidden -->\nVisible detail\n<!-- inline hint -->\n"),
+        )
+        .expect("rendered");
+
+        assert_eq!(rendered.message, "Visible intro\nVisible detail");
+    }
+
+    #[test]
+    fn truncates_initial_subject_body() {
+        let long_body = "a".repeat(MAX_INITIAL_BODY_CHARS + 1);
+        let rendered =
+            render_initial_subject_notification(&sample_issue_thread(), Some(&long_body))
+                .expect("rendered");
+
+        assert_eq!(rendered.message.chars().count(), MAX_INITIAL_BODY_CHARS);
+        assert!(rendered.message.ends_with('…'));
+    }
+
+    #[test]
+    fn falls_back_when_initial_subject_body_is_empty() {
+        let rendered = render_initial_subject_notification(&sample_issue_thread(), Some("\n\n"))
+            .expect("rendered");
+
+        assert_eq!(rendered.title, "Issue title (#7)");
+        assert_eq!(rendered.message, "Issue update in octo/repo");
+    }
+
+    #[test]
     fn slugifies_sequence_id_with_single_dashes() {
         assert_eq!(
             slugified_sequence_id("https://github.com/octo/repo/pull/42/"),
@@ -502,26 +587,10 @@ mod tests {
         let thread = sample_thread();
         let timeline = vec![TimelineEvent {
             event: Some(String::from("committed")),
-            actor: None,
-            user: None,
-            author: Some(User {
-                login: String::from("foo"),
-                kind: None,
-            }),
-            committer: None,
-            assignee: None,
-            review_requester: None,
-            requested_reviewer: None,
-            requested_team: None,
-            label: None,
-            dismissed_review: None,
-            body: None,
+            author: Some(user("foo")),
             message: Some(String::from("feat: improve notifier\n\nbody")),
-            commit: None,
-            state: None,
             created_at: Some(String::from("2026-03-25T00:00:00Z")),
-            updated_at: None,
-            submitted_at: None,
+            ..TimelineEvent::default()
         }];
 
         let rendered = render_notification(&thread, None, Some(&timeline)).expect("rendered");
@@ -540,27 +609,9 @@ mod tests {
     fn renders_review_approval_without_generic_pr_suffix() {
         let thread = sample_thread();
         let timeline = vec![TimelineEvent {
-            event: Some(String::from("reviewed")),
-            actor: Some(User {
-                login: String::from("chaosvolt"),
-                kind: None,
-            }),
-            user: None,
-            author: None,
-            committer: None,
-            assignee: None,
-            review_requester: None,
-            requested_reviewer: None,
-            requested_team: None,
-            label: None,
-            dismissed_review: None,
-            body: None,
-            message: None,
-            commit: None,
             state: Some(String::from("APPROVED")),
-            created_at: None,
-            updated_at: None,
             submitted_at: Some(String::from("2026-03-25T00:00:00Z")),
+            ..event("reviewed", "chaosvolt")
         }];
 
         let rendered = render_notification(&thread, None, Some(&timeline)).expect("rendered");
@@ -572,27 +623,10 @@ mod tests {
     fn renders_review_comment_body() {
         let thread = sample_thread();
         let timeline = vec![TimelineEvent {
-            event: Some(String::from("reviewed")),
-            actor: Some(User {
-                login: String::from("chaosvolt"),
-                kind: None,
-            }),
-            user: None,
-            author: None,
-            committer: None,
-            assignee: None,
-            review_requester: None,
-            requested_reviewer: None,
-            requested_team: None,
-            label: None,
-            dismissed_review: None,
             body: Some(String::from("Could you split this into a helper?")),
-            message: None,
-            commit: None,
             state: Some(String::from("COMMENTED")),
-            created_at: None,
-            updated_at: None,
             submitted_at: Some(String::from("2026-03-25T00:00:00Z")),
+            ..event("reviewed", "chaosvolt")
         }];
 
         let rendered = render_notification(&thread, None, Some(&timeline)).expect("rendered");
@@ -607,29 +641,11 @@ mod tests {
     fn renders_review_dismissal_message_inline() {
         let thread = sample_thread();
         let timeline = vec![TimelineEvent {
-            event: Some(String::from("review_dismissed")),
-            actor: Some(User {
-                login: String::from("chaosvolt"),
-                kind: None,
-            }),
-            user: None,
-            author: None,
-            committer: None,
-            assignee: None,
-            review_requester: None,
-            requested_reviewer: None,
-            requested_team: None,
-            label: None,
             dismissed_review: Some(DismissedReview {
                 dismissal_message: Some(String::from("one more test soonmish")),
             }),
-            body: None,
-            message: None,
-            commit: None,
-            state: None,
             created_at: Some(String::from("2026-06-09T06:46:03Z")),
-            updated_at: None,
-            submitted_at: None,
+            ..event("review_dismissed", "chaosvolt")
         }];
 
         let rendered = render_notification(&thread, None, Some(&timeline)).expect("rendered");
@@ -645,34 +661,10 @@ mod tests {
         let thread = sample_thread();
         let pull_request = PullRequestDetails {
             merged: true,
-            merged_by: Some(User {
-                login: String::from("chaosvolt"),
-                kind: None,
-            }),
+            merged_by: Some(user("chaosvolt")),
+            ..PullRequestDetails::default()
         };
-        let timeline = vec![TimelineEvent {
-            event: Some(String::from("closed")),
-            actor: Some(User {
-                login: String::from("someone-else"),
-                kind: None,
-            }),
-            user: None,
-            author: None,
-            committer: None,
-            assignee: None,
-            review_requester: None,
-            requested_reviewer: None,
-            requested_team: None,
-            label: None,
-            dismissed_review: None,
-            body: None,
-            message: None,
-            commit: None,
-            state: None,
-            created_at: Some(String::from("2026-03-25T00:00:00Z")),
-            updated_at: None,
-            submitted_at: None,
-        }];
+        let timeline = vec![event("closed", "someone-else")];
 
         let rendered =
             render_notification(&thread, Some(&pull_request), Some(&timeline)).expect("rendered");
@@ -684,29 +676,10 @@ mod tests {
     fn renders_pull_request_comment_as_actor_prefix() {
         let thread = sample_thread();
         let timeline = vec![TimelineEvent {
-            event: Some(String::from("commented")),
-            actor: Some(User {
-                login: String::from("narkiel"),
-                kind: None,
-            }),
-            user: None,
-            author: None,
-            committer: None,
-            assignee: None,
-            review_requester: None,
-            requested_reviewer: None,
-            requested_team: None,
-            label: None,
-            dismissed_review: None,
             body: Some(String::from(
                 "Encountered same bug when grab/dragging a Warehouse shelf with a bunch of stuff on it",
             )),
-            message: None,
-            commit: None,
-            state: None,
-            created_at: Some(String::from("2026-03-25T00:00:00Z")),
-            updated_at: None,
-            submitted_at: None,
+            ..event("commented", "narkiel")
         }];
 
         let rendered = render_notification(&thread, None, Some(&timeline)).expect("rendered");
@@ -722,33 +695,13 @@ mod tests {
         let thread = sample_thread();
         let pull_request = PullRequestDetails {
             merged: true,
-            merged_by: Some(User {
-                login: String::from("dedmemdev"),
-                kind: None,
-            }),
+            merged_by: Some(user("dedmemdev")),
+            ..PullRequestDetails::default()
         };
         let timeline = vec![TimelineEvent {
-            event: Some(String::from("commented")),
-            actor: Some(User {
-                login: String::from("Worom"),
-                kind: None,
-            }),
-            user: None,
-            author: None,
-            committer: None,
-            assignee: None,
-            review_requester: None,
-            requested_reviewer: None,
-            requested_team: None,
-            label: None,
-            dismissed_review: None,
             body: Some(String::from("I take full responsibility for this mistake")),
-            message: None,
-            commit: None,
-            state: None,
             created_at: Some(String::from("2026-06-01T08:23:47Z")),
-            updated_at: None,
-            submitted_at: None,
+            ..event("commented", "Worom")
         }];
 
         let rendered =
@@ -765,27 +718,8 @@ mod tests {
         let mut thread = sample_thread();
         thread.reason = Some(String::from("mention"));
         let timeline = vec![TimelineEvent {
-            event: Some(String::from("commented")),
-            actor: Some(User {
-                login: String::from("dedmemdev"),
-                kind: None,
-            }),
-            user: None,
-            author: None,
-            committer: None,
-            assignee: None,
-            review_requester: None,
-            requested_reviewer: None,
-            requested_team: None,
-            label: None,
-            dismissed_review: None,
             body: Some(String::from("@you please check this")),
-            message: None,
-            commit: None,
-            state: None,
-            created_at: Some(String::from("2026-03-25T00:00:00Z")),
-            updated_at: None,
-            submitted_at: None,
+            ..event("commented", "dedmemdev")
         }];
 
         let rendered = render_notification(&thread, None, Some(&timeline)).expect("rendered");
@@ -799,27 +733,8 @@ mod tests {
         let mut thread = sample_issue_thread();
         thread.reason = Some(String::from("mention"));
         let timeline = vec![TimelineEvent {
-            event: Some(String::from("commented")),
-            actor: Some(User {
-                login: String::from("bar"),
-                kind: None,
-            }),
-            user: None,
-            author: None,
-            committer: None,
-            assignee: None,
-            review_requester: None,
-            requested_reviewer: None,
-            requested_team: None,
-            label: None,
-            dismissed_review: None,
             body: Some(String::from("ping @you")),
-            message: None,
-            commit: None,
-            state: None,
-            created_at: Some(String::from("2026-03-25T00:00:00Z")),
-            updated_at: None,
-            submitted_at: None,
+            ..event("commented", "bar")
         }];
 
         let rendered = render_notification(&thread, None, Some(&timeline)).expect("rendered");
@@ -841,29 +756,10 @@ mod tests {
     fn renders_issue_comment_as_actor_prefix() {
         let thread = sample_issue_thread();
         let timeline = vec![TimelineEvent {
-            event: Some(String::from("commented")),
-            actor: Some(User {
-                login: String::from("narkiel"),
-                kind: None,
-            }),
-            user: None,
-            author: None,
-            committer: None,
-            assignee: None,
-            review_requester: None,
-            requested_reviewer: None,
-            requested_team: None,
-            label: None,
-            dismissed_review: None,
             body: Some(String::from(
                 "Downloaded latest nightly, followed steps to reproduce listed in original issue.",
             )),
-            message: None,
-            commit: None,
-            state: None,
-            created_at: Some(String::from("2026-03-25T00:00:00Z")),
-            updated_at: None,
-            submitted_at: None,
+            ..event("commented", "narkiel")
         }];
 
         let rendered = render_notification(&thread, None, Some(&timeline)).expect("rendered");
@@ -879,50 +775,12 @@ mod tests {
         let thread = sample_thread();
         let timeline = vec![
             TimelineEvent {
-                event: Some(String::from("commented")),
-                actor: Some(User {
-                    login: String::from("bar"),
-                    kind: None,
-                }),
-                user: None,
-                author: None,
-                committer: None,
-                assignee: None,
-                review_requester: None,
-                requested_reviewer: None,
-                requested_team: None,
-                label: None,
-                dismissed_review: None,
                 body: Some(String::from("Closing because this was fixed.")),
-                message: None,
-                commit: None,
-                state: None,
-                created_at: Some(String::from("2026-03-25T00:00:00Z")),
-                updated_at: None,
-                submitted_at: None,
+                ..event("commented", "bar")
             },
             TimelineEvent {
-                event: Some(String::from("closed")),
-                actor: Some(User {
-                    login: String::from("bar"),
-                    kind: None,
-                }),
-                user: None,
-                author: None,
-                committer: None,
-                assignee: None,
-                review_requester: None,
-                requested_reviewer: None,
-                requested_team: None,
-                label: None,
-                dismissed_review: None,
-                body: None,
-                message: None,
-                commit: None,
-                state: None,
                 created_at: Some(String::from("2026-03-25T00:01:00Z")),
-                updated_at: None,
-                submitted_at: None,
+                ..event("closed", "bar")
             },
         ];
 
@@ -937,29 +795,7 @@ mod tests {
     #[test]
     fn renders_issue_closed_title_from_timeline() {
         let thread = sample_issue_thread();
-        let timeline = vec![TimelineEvent {
-            event: Some(String::from("closed")),
-            actor: Some(User {
-                login: String::from("bar"),
-                kind: None,
-            }),
-            user: None,
-            author: None,
-            committer: None,
-            assignee: None,
-            review_requester: None,
-            requested_reviewer: None,
-            requested_team: None,
-            label: None,
-            dismissed_review: None,
-            body: None,
-            message: None,
-            commit: None,
-            state: None,
-            created_at: Some(String::from("2026-03-25T00:00:00Z")),
-            updated_at: None,
-            submitted_at: None,
-        }];
+        let timeline = vec![event("closed", "bar")];
 
         let rendered = render_notification(&thread, None, Some(&timeline)).expect("rendered");
         assert_eq!(rendered.title, "Issue title (#7)");
@@ -971,50 +807,12 @@ mod tests {
         let thread = sample_issue_thread();
         let timeline = vec![
             TimelineEvent {
-                event: Some(String::from("commented")),
-                actor: Some(User {
-                    login: String::from("bar"),
-                    kind: None,
-                }),
-                user: None,
-                author: None,
-                committer: None,
-                assignee: None,
-                review_requester: None,
-                requested_reviewer: None,
-                requested_team: None,
-                label: None,
-                dismissed_review: None,
                 body: Some(String::from("Closing because this was fixed.")),
-                message: None,
-                commit: None,
-                state: None,
-                created_at: Some(String::from("2026-03-25T00:00:00Z")),
-                updated_at: None,
-                submitted_at: None,
+                ..event("commented", "bar")
             },
             TimelineEvent {
-                event: Some(String::from("closed")),
-                actor: Some(User {
-                    login: String::from("bar"),
-                    kind: None,
-                }),
-                user: None,
-                author: None,
-                committer: None,
-                requested_reviewer: None,
-                review_requester: None,
-                requested_team: None,
-                assignee: None,
-                label: None,
-                dismissed_review: None,
-                body: None,
-                message: None,
-                commit: None,
-                state: None,
                 created_at: Some(String::from("2026-03-25T00:01:00Z")),
-                updated_at: None,
-                submitted_at: None,
+                ..event("closed", "bar")
             },
         ];
 
@@ -1030,29 +828,10 @@ mod tests {
     fn renders_issue_label_detail_from_timeline() {
         let thread = sample_issue_thread();
         let timeline = vec![TimelineEvent {
-            event: Some(String::from("labeled")),
-            actor: Some(User {
-                login: String::from("bar"),
-                kind: None,
-            }),
-            user: None,
-            author: None,
-            committer: None,
-            assignee: None,
-            review_requester: None,
-            requested_reviewer: None,
-            requested_team: None,
             label: Some(Label {
                 name: String::from("bug"),
             }),
-            dismissed_review: None,
-            body: None,
-            message: None,
-            commit: None,
-            state: None,
-            created_at: Some(String::from("2026-03-25T00:00:00Z")),
-            updated_at: None,
-            submitted_at: None,
+            ..event("labeled", "bar")
         }];
 
         let rendered = render_notification(&thread, None, Some(&timeline)).expect("rendered");

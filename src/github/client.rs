@@ -12,8 +12,8 @@ use crate::config::GitHubConfig;
 
 use super::auth::resolve_token;
 use super::model::{
-    AutoWatchRepository, PollResult, PullRequestDetails, RepositorySubscriptionResult, Thread,
-    TimelineEvent,
+    AutoWatchRepository, PollResult, PullRequestDetails, RepositorySubscriptionResult,
+    SubjectDetails, Thread, TimelineEvent,
 };
 use super::timeline::timeline_url;
 
@@ -24,6 +24,7 @@ query PullRequestEnrichment($owner: String!, $name: String!, $number: Int!) {
   repository(owner: $owner, name: $name) {
     pullRequest(number: $number) {
       merged
+      body
       mergedBy {
         __typename
         ... on User { login }
@@ -235,6 +236,7 @@ struct GraphQlRepository {
 #[derive(Debug, Deserialize)]
 struct GraphQlPullRequest {
     merged: bool,
+    body: Option<String>,
     #[serde(rename = "mergedBy")]
     merged_by: Option<GraphQlActor>,
     commits: GraphQlCommitConnection,
@@ -636,9 +638,24 @@ impl GitHubClient {
             PullRequestDetails {
                 merged: pull_request.merged,
                 merged_by: pull_request.merged_by.clone().map(graphql_actor_to_user),
+                body: pull_request.body.clone(),
             },
             graphql_timeline_to_rest(&pull_request),
         ))
+    }
+
+    pub async fn subject_details(&self, subject_url: &str) -> Result<SubjectDetails> {
+        self.client
+            .get(subject_url)
+            .headers(self.headers()?)
+            .send()
+            .await
+            .context("failed to fetch subject details")?
+            .error_for_status()
+            .context("subject details request failed")?
+            .json::<SubjectDetails>()
+            .await
+            .context("failed to decode subject details")
     }
 
     pub async fn issue_timeline(&self, subject_url: &str) -> Result<Vec<TimelineEvent>> {
@@ -830,22 +847,11 @@ fn graphql_timeline_event(item: &GraphQlTimelineItem) -> TimelineEvent {
                     .clone()
                     .or_else(|| latest_comment.and_then(|comment| comment.author.clone()))
                     .map(graphql_actor_to_user),
-                user: None,
-                author: None,
-                committer: None,
-                assignee: None,
-                review_requester: None,
-                requested_reviewer: None,
-                requested_team: None,
-                label: None,
-                dismissed_review: None,
                 body: review_detail(body, latest_comment),
-                message: None,
-                commit: None,
                 state: state.clone(),
                 created_at: Some(created_at.clone()),
-                updated_at: None,
                 submitted_at: Some(created_at.clone()),
+                ..TimelineEvent::default()
             }
         }
         GraphQlTimelineItem::IssueComment {
@@ -855,22 +861,9 @@ fn graphql_timeline_event(item: &GraphQlTimelineItem) -> TimelineEvent {
         } => TimelineEvent {
             event: Some(String::from("commented")),
             actor: author.clone().map(graphql_actor_to_user),
-            user: None,
-            author: None,
-            committer: None,
-            assignee: None,
-            review_requester: None,
-            requested_reviewer: None,
-            requested_team: None,
-            label: None,
-            dismissed_review: None,
             body: body.clone(),
-            message: None,
-            commit: None,
-            state: None,
             created_at: Some(created_at.clone()),
-            updated_at: None,
-            submitted_at: None,
+            ..TimelineEvent::default()
         },
         GraphQlTimelineItem::ReviewRequestedEvent {
             actor,
@@ -879,10 +872,6 @@ fn graphql_timeline_event(item: &GraphQlTimelineItem) -> TimelineEvent {
         } => TimelineEvent {
             event: Some(String::from("review_requested")),
             actor: actor.clone().map(graphql_actor_to_user),
-            user: None,
-            author: None,
-            committer: None,
-            assignee: None,
             review_requester: actor.clone().map(graphql_actor_to_user),
             requested_reviewer: requested_reviewer
                 .as_ref()
@@ -890,15 +879,8 @@ fn graphql_timeline_event(item: &GraphQlTimelineItem) -> TimelineEvent {
             requested_team: requested_reviewer
                 .as_ref()
                 .and_then(graphql_requested_reviewer_team),
-            label: None,
-            dismissed_review: None,
-            body: None,
-            message: None,
-            commit: None,
-            state: None,
             created_at: Some(created_at.clone()),
-            updated_at: None,
-            submitted_at: None,
+            ..TimelineEvent::default()
         },
         GraphQlTimelineItem::ReviewRequestRemovedEvent {
             actor,
@@ -907,10 +889,6 @@ fn graphql_timeline_event(item: &GraphQlTimelineItem) -> TimelineEvent {
         } => TimelineEvent {
             event: Some(String::from("review_request_removed")),
             actor: actor.clone().map(graphql_actor_to_user),
-            user: None,
-            author: None,
-            committer: None,
-            assignee: None,
             review_requester: actor.clone().map(graphql_actor_to_user),
             requested_reviewer: requested_reviewer
                 .as_ref()
@@ -918,15 +896,8 @@ fn graphql_timeline_event(item: &GraphQlTimelineItem) -> TimelineEvent {
             requested_team: requested_reviewer
                 .as_ref()
                 .and_then(graphql_requested_reviewer_team),
-            label: None,
-            dismissed_review: None,
-            body: None,
-            message: None,
-            commit: None,
-            state: None,
             created_at: Some(created_at.clone()),
-            updated_at: None,
-            submitted_at: None,
+            ..TimelineEvent::default()
         },
         GraphQlTimelineItem::ReviewDismissedEvent {
             actor,
@@ -935,24 +906,11 @@ fn graphql_timeline_event(item: &GraphQlTimelineItem) -> TimelineEvent {
         } => TimelineEvent {
             event: Some(String::from("review_dismissed")),
             actor: actor.clone().map(graphql_actor_to_user),
-            user: None,
-            author: None,
-            committer: None,
-            assignee: None,
-            review_requester: None,
-            requested_reviewer: None,
-            requested_team: None,
-            label: None,
             dismissed_review: Some(super::model::DismissedReview {
                 dismissal_message: dismissal_message.clone(),
             }),
-            body: None,
-            message: None,
-            commit: None,
-            state: None,
             created_at: Some(created_at.clone()),
-            updated_at: None,
-            submitted_at: None,
+            ..TimelineEvent::default()
         },
         GraphQlTimelineItem::MergedEvent { actor, created_at } => simple_timeline_event(
             "merged",
@@ -986,24 +944,11 @@ fn graphql_timeline_event(item: &GraphQlTimelineItem) -> TimelineEvent {
         } => TimelineEvent {
             event: Some(String::from("labeled")),
             actor: actor.clone().map(graphql_actor_to_user),
-            user: None,
-            author: None,
-            committer: None,
-            assignee: None,
-            review_requester: None,
-            requested_reviewer: None,
-            requested_team: None,
             label: label.as_ref().map(|label| super::model::Label {
                 name: label.name.clone(),
             }),
-            dismissed_review: None,
-            body: None,
-            message: None,
-            commit: None,
-            state: None,
             created_at: Some(created_at.clone()),
-            updated_at: None,
-            submitted_at: None,
+            ..TimelineEvent::default()
         },
         GraphQlTimelineItem::UnlabeledEvent {
             actor,
@@ -1012,24 +957,11 @@ fn graphql_timeline_event(item: &GraphQlTimelineItem) -> TimelineEvent {
         } => TimelineEvent {
             event: Some(String::from("unlabeled")),
             actor: actor.clone().map(graphql_actor_to_user),
-            user: None,
-            author: None,
-            committer: None,
-            assignee: None,
-            review_requester: None,
-            requested_reviewer: None,
-            requested_team: None,
             label: label.as_ref().map(|label| super::model::Label {
                 name: label.name.clone(),
             }),
-            dismissed_review: None,
-            body: None,
-            message: None,
-            commit: None,
-            state: None,
             created_at: Some(created_at.clone()),
-            updated_at: None,
-            submitted_at: None,
+            ..TimelineEvent::default()
         },
         GraphQlTimelineItem::AssignedEvent {
             actor,
@@ -1038,22 +970,9 @@ fn graphql_timeline_event(item: &GraphQlTimelineItem) -> TimelineEvent {
         } => TimelineEvent {
             event: Some(String::from("assigned")),
             actor: actor.clone().map(graphql_actor_to_user),
-            user: None,
-            author: None,
-            committer: None,
             assignee: assignee.clone().map(graphql_actor_to_user),
-            review_requester: None,
-            requested_reviewer: None,
-            requested_team: None,
-            label: None,
-            dismissed_review: None,
-            body: None,
-            message: None,
-            commit: None,
-            state: None,
             created_at: Some(created_at.clone()),
-            updated_at: None,
-            submitted_at: None,
+            ..TimelineEvent::default()
         },
         GraphQlTimelineItem::UnassignedEvent {
             actor,
@@ -1062,22 +981,9 @@ fn graphql_timeline_event(item: &GraphQlTimelineItem) -> TimelineEvent {
         } => TimelineEvent {
             event: Some(String::from("unassigned")),
             actor: actor.clone().map(graphql_actor_to_user),
-            user: None,
-            author: None,
-            committer: None,
             assignee: assignee.clone().map(graphql_actor_to_user),
-            review_requester: None,
-            requested_reviewer: None,
-            requested_team: None,
-            label: None,
-            dismissed_review: None,
-            body: None,
-            message: None,
-            commit: None,
-            state: None,
             created_at: Some(created_at.clone()),
-            updated_at: None,
-            submitted_at: None,
+            ..TimelineEvent::default()
         },
     }
 }
@@ -1115,23 +1021,10 @@ fn graphql_commit_event(commit: &GraphQlCommit) -> TimelineEvent {
 
     TimelineEvent {
         event: Some(String::from("committed")),
-        actor: None,
-        user: None,
         author: actor,
-        committer: None,
-        assignee: None,
-        review_requester: None,
-        requested_reviewer: None,
-        requested_team: None,
-        label: None,
-        dismissed_review: None,
-        body: None,
         message: Some(commit.message_headline.clone()),
-        commit: None,
-        state: None,
         created_at: Some(commit.authored_date.clone()),
-        updated_at: None,
-        submitted_at: None,
+        ..TimelineEvent::default()
     }
 }
 
@@ -1143,22 +1036,8 @@ fn simple_timeline_event(
     TimelineEvent {
         event: Some(String::from(event)),
         actor,
-        user: None,
-        author: None,
-        committer: None,
-        assignee: None,
-        review_requester: None,
-        requested_reviewer: None,
-        requested_team: None,
-        label: None,
-        dismissed_review: None,
-        body: None,
-        message: None,
-        commit: None,
-        state: None,
         created_at,
-        updated_at: None,
-        submitted_at: None,
+        ..TimelineEvent::default()
     }
 }
 
