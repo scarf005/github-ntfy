@@ -5,14 +5,14 @@ use tracing::{error, info, warn};
 
 use crate::action;
 use crate::auto_watch::should_watch_repository;
-use crate::config::LoadedConfig;
+use crate::config::{BlockRule, LoadedConfig};
 use crate::filter::{build_notification_facts, matching_block_rule};
 use crate::github::{
     GitHubClient, PullRequestDetails, RepositorySubscriptionResult, Thread, TimelineEvent,
 };
 use crate::ntfy::NtfyClient;
 use crate::render::render_notification;
-use crate::state::State;
+use crate::state::{NotificationMerge, State};
 
 pub struct App {
     loaded: LoadedConfig,
@@ -210,9 +210,19 @@ impl App {
         let (pull_request, timeline) = self.enrich_thread(thread).await;
         let mut rendered = render_notification(thread, pull_request.as_ref(), timeline.as_deref())?;
         rendered.actions = action::notification_actions(&self.loaded.config.actions, &thread.id);
-        let facts = build_notification_facts(thread, pull_request.as_ref(), timeline.as_deref());
-        let merge = state.merge_notification(&rendered.sequence_id, &rendered.message);
-        rendered.message = merge.message();
+        let mut facts =
+            build_notification_facts(thread, pull_request.as_ref(), timeline.as_deref());
+        let mut merge = state.merge_notification(&rendered.sequence_id, &rendered.message);
+
+        if matching_block_rule(&self.loaded.config.filters, &facts)
+            .is_some_and(|rule| should_send_initial_subject_notification(rule, &merge, thread))
+        {
+            rendered = render_notification(thread, pull_request.as_ref(), None)?;
+            rendered.actions =
+                action::notification_actions(&self.loaded.config.actions, &thread.id);
+            facts = build_notification_facts(thread, pull_request.as_ref(), None);
+            merge = state.merge_notification(&rendered.sequence_id, &rendered.message);
+        }
 
         if let Some(rule) = matching_block_rule(&self.loaded.config.filters, &facts) {
             warn!(
@@ -226,6 +236,8 @@ impl App {
             state.mark_seen(rendered.dedupe_key, self.loaded.config.app.max_seen);
             return Ok(false);
         }
+
+        rendered.message = merge.message();
 
         if merge.had_existing && !merge.inserted_new_block {
             state.mark_seen(rendered.dedupe_key, self.loaded.config.app.max_seen);
@@ -310,5 +322,95 @@ impl App {
         };
 
         (pull_request, timeline)
+    }
+}
+
+fn should_send_initial_subject_notification(
+    rule: &BlockRule,
+    merge: &NotificationMerge,
+    thread: &Thread,
+) -> bool {
+    rule.activity.is_some()
+        && !merge.had_existing
+        && matches!(
+            thread.subject.kind.as_deref(),
+            Some("PullRequest" | "Issue")
+        )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::github::{Repository, Subject};
+
+    fn thread(kind: &str) -> Thread {
+        Thread {
+            id: String::from("1"),
+            unread: true,
+            updated_at: String::from("2026-06-15T00:07:51Z"),
+            reason: Some(String::from("subscribed")),
+            repository: Repository {
+                full_name: String::from("cataclysmbn/Cataclysm-BN"),
+                html_url: String::from("https://github.com/cataclysmbn/Cataclysm-BN"),
+                owner: None,
+            },
+            subject: Subject {
+                title: Some(String::from("feat: allow pens to be used as writing tools")),
+                kind: Some(String::from(kind)),
+                url: Some(String::from(
+                    "https://api.github.com/repos/cataclysmbn/Cataclysm-BN/pulls/9503",
+                )),
+            },
+        }
+    }
+
+    fn merge(had_existing: bool) -> NotificationMerge {
+        NotificationMerge {
+            blocks: vec![String::from("Added label: JSON")],
+            had_existing,
+            inserted_new_block: true,
+        }
+    }
+
+    #[test]
+    fn sends_initial_subject_when_first_activity_is_filtered() {
+        let rule = BlockRule {
+            activity: Some(String::from("labeled")),
+            ..BlockRule::default()
+        };
+
+        assert!(should_send_initial_subject_notification(
+            &rule,
+            &merge(false),
+            &thread("PullRequest")
+        ));
+    }
+
+    #[test]
+    fn keeps_filtering_activity_after_subject_was_sent() {
+        let rule = BlockRule {
+            activity: Some(String::from("labeled")),
+            ..BlockRule::default()
+        };
+
+        assert!(!should_send_initial_subject_notification(
+            &rule,
+            &merge(true),
+            &thread("PullRequest")
+        ));
+    }
+
+    #[test]
+    fn does_not_bypass_non_activity_filters() {
+        let rule = BlockRule {
+            repo: Some(String::from("cataclysmbn/Cataclysm-BN")),
+            ..BlockRule::default()
+        };
+
+        assert!(!should_send_initial_subject_notification(
+            &rule,
+            &merge(false),
+            &thread("PullRequest")
+        ));
     }
 }
