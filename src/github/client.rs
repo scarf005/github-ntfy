@@ -2,8 +2,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use reqwest::header::{
-    ACCEPT, AUTHORIZATION, HeaderMap, HeaderName, HeaderValue, IF_MODIFIED_SINCE, LAST_MODIFIED,
-    USER_AGENT,
+    ACCEPT, AUTHORIZATION, HeaderMap, HeaderName, HeaderValue, LAST_MODIFIED, USER_AGENT,
 };
 use reqwest::{Client, StatusCode, Url};
 use serde::Deserialize;
@@ -524,29 +523,25 @@ impl GitHubClient {
         config: &GitHubConfig,
         last_modified: Option<&str>,
     ) -> Result<PollResult> {
-        let mut request = self
+        // Poll unconditionally: GitHub can return 304 for If-Modified-Since even when
+        // existing unread notification threads have newer updated_at values.
+        let request = self
             .client
             .get(self.endpoint("/notifications")?)
-            .headers(self.headers()?);
-        request = request.query(&[
-            ("all", "false"),
-            (
-                "participating",
-                if config.participating {
-                    "true"
-                } else {
-                    "false"
-                },
-            ),
-            ("page", "1"),
-        ]);
-        if let Some(last_modified) = last_modified {
-            request = request.header(IF_MODIFIED_SINCE, last_modified);
-        }
-        let request = request.query(&[
-            ("per_page", config.per_page.to_string()),
-            ("page", String::from("1")),
-        ]);
+            .headers(self.headers()?)
+            .query(&[
+                ("all", String::from("false")),
+                (
+                    "participating",
+                    if config.participating {
+                        String::from("true")
+                    } else {
+                        String::from("false")
+                    },
+                ),
+                ("per_page", config.per_page.to_string()),
+                ("page", String::from("1")),
+            ]);
         let response = request
             .send()
             .await
