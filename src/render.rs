@@ -296,7 +296,27 @@ fn initial_subject_message(body: Option<&str>, fallback: &str) -> String {
 }
 
 fn format_initial_body(body: &str) -> String {
-    truncate_chars(&trim_multiline_text(body), MAX_INITIAL_BODY_CHARS)
+    truncate_chars(
+        &trim_multiline_text(&strip_html_comments(body)),
+        MAX_INITIAL_BODY_CHARS,
+    )
+}
+
+fn strip_html_comments(input: &str) -> String {
+    let mut output = String::with_capacity(input.len());
+    let mut tail = input;
+
+    while let Some(start) = tail.find("<!--") {
+        output.push_str(&tail[..start]);
+        let comment_tail = &tail[start + 4..];
+        let Some(end) = comment_tail.find("-->") else {
+            return output;
+        };
+        tail = &comment_tail[end + 3..];
+    }
+
+    output.push_str(tail);
+    output
 }
 
 fn truncate_chars(input: &str, max_chars: usize) -> String {
@@ -550,6 +570,17 @@ mod tests {
 
         assert_eq!(rendered.title, "Fix pull link (#42)");
         assert_eq!(rendered.message, "First paragraph.\nSecond paragraph.");
+    }
+
+    #[test]
+    fn removes_html_comments_from_initial_subject_body() {
+        let rendered = render_initial_subject_notification(
+            &sample_thread(),
+            Some("Visible intro\n<!-- template hint\nthat should stay hidden -->\nVisible detail\n<!-- inline hint -->\n"),
+        )
+        .expect("rendered");
+
+        assert_eq!(rendered.message, "Visible intro\nVisible detail");
     }
 
     #[test]
