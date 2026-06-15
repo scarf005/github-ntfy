@@ -4,6 +4,7 @@ use crate::github::{PullRequestDetails, Thread, TimelineActivity, TimelineEvent}
 
 const DEFAULT_ICON_URL: &str =
     "https://github.githubassets.com/images/modules/logos_page/GitHub-Mark.png";
+const MAX_INITIAL_BODY_CHARS: usize = 1800;
 
 struct NotificationIdentity {
     click_url: String,
@@ -41,8 +42,6 @@ pub fn render_notification(
         .as_ref()
         .and_then(|owner| owner.avatar_url.clone())
         .unwrap_or_else(|| String::from(DEFAULT_ICON_URL));
-    let tags = build_tags(thread);
-    let priority = priority(thread);
     let reason = thread.reason.as_deref().unwrap_or("notification");
 
     let (title, message) = match thread.subject.kind.as_deref() {
@@ -52,19 +51,54 @@ pub fn render_notification(
         Some("Issue") => enrich_issue(&base_title, &base_message, reason, timeline),
         _ => (base_title, base_message),
     };
-    let title = title_with_subject_number(thread, &title);
 
-    Ok(RenderedNotification {
+    Ok(rendered_notification(
+        thread, identity, icon_url, title, message,
+    ))
+}
+
+pub fn render_initial_subject_notification(
+    thread: &Thread,
+    body: Option<&str>,
+) -> Result<RenderedNotification> {
+    let title = thread
+        .subject
+        .title
+        .clone()
+        .unwrap_or_else(|| thread.repository.full_name.clone());
+    let fallback = base_message(thread);
+    let message = initial_subject_message(body, &fallback);
+    let identity = notification_identity(thread);
+    let icon_url = thread
+        .repository
+        .owner
+        .as_ref()
+        .and_then(|owner| owner.avatar_url.clone())
+        .unwrap_or_else(|| String::from(DEFAULT_ICON_URL));
+
+    Ok(rendered_notification(
+        thread, identity, icon_url, title, message,
+    ))
+}
+
+fn rendered_notification(
+    thread: &Thread,
+    identity: NotificationIdentity,
+    icon_url: String,
+    title: String,
+    message: String,
+) -> RenderedNotification {
+    RenderedNotification {
         dedupe_key: format!("{}|{}", thread.id, thread.updated_at),
         sequence_id: identity.sequence_id,
-        title,
+        title: title_with_subject_number(thread, &title),
         message,
         actions: None,
         click_url: identity.click_url,
         icon_url,
-        tags,
-        priority,
-    })
+        tags: build_tags(thread),
+        priority: priority(thread),
+    }
 }
 
 fn enrich_pull_request(
@@ -253,6 +287,27 @@ fn subject_number(thread: &Thread) -> Option<String> {
             .filter(|number| !number.is_empty() && number.chars().all(|ch| ch.is_ascii_digit()))?;
         Some(String::from(number))
     })
+}
+
+fn initial_subject_message(body: Option<&str>, fallback: &str) -> String {
+    body.map(format_initial_body)
+        .filter(|body| !body.is_empty())
+        .unwrap_or_else(|| String::from(fallback))
+}
+
+fn format_initial_body(body: &str) -> String {
+    truncate_chars(&trim_multiline_text(body), MAX_INITIAL_BODY_CHARS)
+}
+
+fn truncate_chars(input: &str, max_chars: usize) -> String {
+    if input.chars().count() <= max_chars {
+        return String::from(input);
+    }
+
+    let keep_chars = max_chars.saturating_sub(1);
+    let mut truncated = input.chars().take(keep_chars).collect::<String>();
+    truncated.push('…');
+    truncated
 }
 
 fn base_message(thread: &Thread) -> String {
@@ -486,6 +541,38 @@ mod tests {
     }
 
     #[test]
+    fn renders_initial_subject_body() {
+        let rendered = render_initial_subject_notification(
+            &sample_thread(),
+            Some("\n  First paragraph.\n\n  Second paragraph.\n"),
+        )
+        .expect("rendered");
+
+        assert_eq!(rendered.title, "Fix pull link (#42)");
+        assert_eq!(rendered.message, "First paragraph.\nSecond paragraph.");
+    }
+
+    #[test]
+    fn truncates_initial_subject_body() {
+        let long_body = "a".repeat(MAX_INITIAL_BODY_CHARS + 1);
+        let rendered =
+            render_initial_subject_notification(&sample_issue_thread(), Some(&long_body))
+                .expect("rendered");
+
+        assert_eq!(rendered.message.chars().count(), MAX_INITIAL_BODY_CHARS);
+        assert!(rendered.message.ends_with('…'));
+    }
+
+    #[test]
+    fn falls_back_when_initial_subject_body_is_empty() {
+        let rendered = render_initial_subject_notification(&sample_issue_thread(), Some("\n\n"))
+            .expect("rendered");
+
+        assert_eq!(rendered.title, "Issue title (#7)");
+        assert_eq!(rendered.message, "Issue update in octo/repo");
+    }
+
+    #[test]
     fn slugifies_sequence_id_with_single_dashes() {
         assert_eq!(
             slugified_sequence_id("https://github.com/octo/repo/pull/42/"),
@@ -649,6 +736,7 @@ mod tests {
                 login: String::from("chaosvolt"),
                 kind: None,
             }),
+            body: None,
         };
         let timeline = vec![TimelineEvent {
             event: Some(String::from("closed")),
@@ -726,6 +814,7 @@ mod tests {
                 login: String::from("dedmemdev"),
                 kind: None,
             }),
+            body: None,
         };
         let timeline = vec![TimelineEvent {
             event: Some(String::from("commented")),
