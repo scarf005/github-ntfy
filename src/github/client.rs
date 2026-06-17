@@ -35,10 +35,9 @@ const POLL_INTERVAL_HEADER: HeaderName = HeaderName::from_static("x-poll-interva
 
 type GraphQlPullRequest = gql::PullRequestEnrichmentRepositoryPullRequest;
 type GraphQlTimelineItem = gql::PullRequestEnrichmentRepositoryPullRequestTimelineItemsNodes;
-type GraphQlReviewComment =
-    gql::PullRequestEnrichmentRepositoryPullRequestTimelineItemsNodesOnPullRequestReviewCommentsNodes;
-type GraphQlReviewCommentConnection =
-    gql::PullRequestEnrichmentRepositoryPullRequestTimelineItemsNodesOnPullRequestReviewComments;
+type GraphQlReview = gql::ReviewFields;
+type GraphQlReviewComment = gql::ReviewFieldsCommentsNodes;
+type GraphQlReviewCommentConnection = gql::ReviewFieldsComments;
 type GraphQlCommit = gql::PullRequestEnrichmentRepositoryPullRequestCommitsNodesCommit;
 
 #[derive(Debug)]
@@ -460,6 +459,14 @@ fn graphql_timeline_to_rest(pull_request: &GraphQlPullRequest) -> Vec<TimelineEv
 
     timeline.extend(
         pull_request
+            .reviews
+            .nodes
+            .iter()
+            .flatten()
+            .map(graphql_review_event),
+    );
+    timeline.extend(
+        pull_request
             .commits
             .nodes
             .iter()
@@ -472,25 +479,7 @@ fn graphql_timeline_to_rest(pull_request: &GraphQlPullRequest) -> Vec<TimelineEv
 
 fn graphql_timeline_event(item: &GraphQlTimelineItem) -> TimelineEvent {
     match item {
-        GraphQlTimelineItem::PullRequestReview(review) => {
-            let latest_comment = latest_review_comment(&review.comments);
-            let actor = if let Some(author) = review.author.as_ref() {
-                Some(graphql_actor_to_user(author))
-            } else {
-                latest_comment
-                    .and_then(|comment| comment.author.as_ref())
-                    .map(graphql_actor_to_user)
-            };
-            TimelineEvent {
-                event: Some(String::from("reviewed")),
-                actor,
-                body: review_detail(&review.body, latest_comment),
-                state: Some(review_state(&review.state)),
-                created_at: Some(review.created_at.clone()),
-                submitted_at: Some(review.created_at.clone()),
-                ..TimelineEvent::default()
-            }
-        }
+        GraphQlTimelineItem::PullRequestReview(review) => graphql_review_event(review),
         GraphQlTimelineItem::IssueComment(comment) => TimelineEvent {
             event: Some(String::from("commented")),
             actor: comment.author.as_ref().map(graphql_actor_to_user),
@@ -597,6 +586,26 @@ fn graphql_timeline_event(item: &GraphQlTimelineItem) -> TimelineEvent {
     }
 }
 
+fn graphql_review_event(review: &GraphQlReview) -> TimelineEvent {
+    let latest_comment = latest_review_comment(&review.comments);
+    let actor = if let Some(author) = review.author.as_ref() {
+        Some(graphql_actor_to_user(author))
+    } else {
+        latest_comment
+            .and_then(|comment| comment.author.as_ref())
+            .map(graphql_actor_to_user)
+    };
+    TimelineEvent {
+        event: Some(String::from("reviewed")),
+        actor,
+        body: review_detail(&review.body, latest_comment),
+        state: Some(review_state(&review.state)),
+        created_at: Some(review.created_at.clone()),
+        submitted_at: Some(review.submitted_at.clone()),
+        ..TimelineEvent::default()
+    }
+}
+
 fn review_state(state: &gql::PullRequestReviewState) -> String {
     match state {
         gql::PullRequestReviewState::APPROVED => String::from("APPROVED"),
@@ -683,13 +692,10 @@ impl_generated_actor!(
     gql::PullRequestEnrichmentRepositoryPullRequestMergedBy,
     gql::PullRequestEnrichmentRepositoryPullRequestMergedByOn
 );
+impl_generated_actor!(gql::ReviewFieldsAuthor, gql::ReviewFieldsAuthorOn);
 impl_generated_actor!(
-    gql::PullRequestEnrichmentRepositoryPullRequestTimelineItemsNodesOnPullRequestReviewAuthor,
-    gql::PullRequestEnrichmentRepositoryPullRequestTimelineItemsNodesOnPullRequestReviewAuthorOn
-);
-impl_generated_actor!(
-    gql::PullRequestEnrichmentRepositoryPullRequestTimelineItemsNodesOnPullRequestReviewCommentsNodesAuthor,
-    gql::PullRequestEnrichmentRepositoryPullRequestTimelineItemsNodesOnPullRequestReviewCommentsNodesAuthorOn
+    gql::ReviewFieldsCommentsNodesAuthor,
+    gql::ReviewFieldsCommentsNodesAuthorOn
 );
 impl_generated_actor!(
     gql::PullRequestEnrichmentRepositoryPullRequestTimelineItemsNodesOnIssueCommentAuthor,
@@ -987,7 +993,8 @@ mod tests {
                     }
                 ]
             },
-            "createdAt": "2026-03-30T04:10:52Z",
+            "createdAt": "2026-03-30T04:08:52Z",
+            "submittedAt": "2026-03-30T04:10:52Z",
         }))
         .expect("review event");
         let event = graphql_timeline_event(&item);
@@ -998,6 +1005,54 @@ mod tests {
             Some("reviewer")
         );
         assert_eq!(event.body.as_deref(), Some("newer inline comment"));
+    }
+
+    #[test]
+    fn includes_pull_request_reviews_outside_timeline_items() {
+        let pull_request: GraphQlPullRequest = serde_json::from_value(serde_json::json!({
+            "merged": false,
+            "body": "",
+            "mergedBy": null,
+            "timelineItems": { "nodes": [] },
+            "reviews": {
+                "nodes": [
+                    {
+                        "state": "COMMENTED",
+                        "author": { "__typename": "User", "login": "older" },
+                        "body": "older review",
+                        "comments": { "nodes": [] },
+                        "createdAt": "2026-06-17T08:01:24Z",
+                        "submittedAt": "2026-06-17T08:01:24Z"
+                    },
+                    {
+                        "state": "COMMENTED",
+                        "author": { "__typename": "User", "login": "newer" },
+                        "body": "",
+                        "comments": {
+                            "nodes": [{
+                                "author": { "__typename": "User", "login": "newer" },
+                                "body": "latest inline review comment",
+                                "createdAt": "2026-06-17T08:16:44Z"
+                            }]
+                        },
+                        "createdAt": "2026-06-17T08:16:44Z",
+                        "submittedAt": "2026-06-17T08:16:44Z"
+                    }
+                ]
+            },
+            "commits": { "nodes": [] }
+        }))
+        .expect("pull request");
+
+        let timeline = graphql_timeline_to_rest(&pull_request);
+        let activity =
+            super::super::model::TimelineActivity::from_timeline(&timeline).expect("activity");
+
+        assert_eq!(activity.actor, "newer");
+        assert_eq!(
+            activity.detail.as_deref(),
+            Some("latest inline review comment")
+        );
     }
 
     #[test]

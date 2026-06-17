@@ -17,6 +17,7 @@ type PullRequest {
   body: String!
   mergedBy: Actor
   timelineItems(last: Int, itemTypes: [PullRequestTimelineItemsItemType!]): PullRequestTimelineItemsConnection!
+  reviews(last: Int): PullRequestReviewConnection!
   commits(last: Int): PullRequestCommitConnection!
 }
 
@@ -99,6 +100,11 @@ type PullRequestReview {
   body: String!
   comments(last: Int): PullRequestReviewCommentConnection!
   createdAt: DateTime!
+  submittedAt: DateTime!
+}
+
+type PullRequestReviewConnection {
+  nodes: [PullRequestReview!]
 }
 
 type PullRequestReviewCommentConnection {
