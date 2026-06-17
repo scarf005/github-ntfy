@@ -949,6 +949,24 @@ mod tests {
     }
 
     #[test]
+    fn uses_graphql_review_submitted_time_for_activity_ordering() {
+        let item = serde_json::from_value(serde_json::json!({
+            "__typename": "PullRequestReview",
+            "state": "COMMENTED",
+            "author": { "__typename": "User", "login": "reviewer" },
+            "body": "latest review",
+            "comments": { "nodes": [] },
+            "createdAt": "2026-06-17T07:47:25Z",
+            "submittedAt": "2026-06-17T08:16:44Z",
+        }))
+        .expect("review event");
+        let event = graphql_timeline_event(&item);
+
+        assert_eq!(event.created_at.as_deref(), Some("2026-06-17T07:47:25Z"));
+        assert_eq!(event.submitted_at.as_deref(), Some("2026-06-17T08:16:44Z"));
+    }
+
+    #[test]
     fn converts_graphql_review_comments_to_review_body_fallback() {
         let item = serde_json::from_value(serde_json::json!({
             "__typename": "PullRequestReview",
