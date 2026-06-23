@@ -21,6 +21,7 @@ pub mod auto_watch;
 pub mod config;
 pub mod filter;
 pub mod github;
+pub mod intent;
 pub mod ntfy;
 pub mod render;
 pub mod state;
