@@ -15,14 +15,20 @@ pub struct NotificationIntent {
 
 impl NotificationIntent {
     pub fn classify(
-        _thread: &Thread,
+        thread: &Thread,
         timeline: Option<Vec<TimelineEvent>>,
-        _has_existing_notification: bool,
+        has_existing_notification: bool,
     ) -> Self {
-        Self {
-            kind: NotificationIntentKind::Activity,
-            timeline: timeline.unwrap_or_default(),
-        }
+        let timeline = timeline.unwrap_or_default();
+        let has_activity = TimelineActivity::from_timeline(&timeline).is_some();
+        let kind =
+            if is_issue_or_pull_request(thread) && !has_existing_notification && !has_activity {
+                NotificationIntentKind::InitialSubject
+            } else {
+                NotificationIntentKind::Activity
+            };
+
+        Self { kind, timeline }
     }
 
     pub fn initial_subject() -> Self {
@@ -45,12 +51,22 @@ impl NotificationIntent {
 
     pub fn should_fallback_to_initial_subject(
         &self,
-        _rule: &BlockRule,
-        _thread: &Thread,
-        _has_existing_notification: bool,
+        rule: &BlockRule,
+        thread: &Thread,
+        has_existing_notification: bool,
     ) -> bool {
-        false
+        self.kind == NotificationIntentKind::Activity
+            && rule.activity.is_some()
+            && is_issue_or_pull_request(thread)
+            && !has_existing_notification
     }
+}
+
+fn is_issue_or_pull_request(thread: &Thread) -> bool {
+    matches!(
+        thread.subject.kind.as_deref(),
+        Some("PullRequest" | "Issue")
+    )
 }
 
 #[cfg(test)]
@@ -112,7 +128,11 @@ mod tests {
 
     #[test]
     fn falls_back_to_initial_subject_for_filtered_first_activity() {
-        let intent = NotificationIntent::classify(&thread("PullRequest"), Some(vec![labeled_event()]), false);
+        let intent = NotificationIntent::classify(
+            &thread("PullRequest"),
+            Some(vec![labeled_event()]),
+            false,
+        );
         let rule = BlockRule {
             activity: Some(String::from("labeled")),
             ..BlockRule::default()

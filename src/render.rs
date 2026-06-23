@@ -71,6 +71,10 @@ fn rendered_notification(thread: &Thread, title: String, message: String) -> Ren
     }
 }
 
+pub fn notification_sequence_id(thread: &Thread) -> String {
+    notification_identity(thread).sequence_id
+}
+
 fn notification_title(thread: &Thread) -> String {
     thread
         .subject

@@ -100,6 +100,10 @@ impl State {
         }
     }
 
+    pub fn has_notification(&self, sequence_id: &str) -> bool {
+        self.notification_index.contains_key(sequence_id)
+    }
+
     pub fn merge_notification(
         &self,
         sequence_id: &str,
