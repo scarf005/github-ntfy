@@ -1,0 +1,223 @@
+schema {
+  query: Query
+}
+
+scalar DateTime
+
+type Query {
+  repository(owner: String!, name: String!): Repository
+}
+
+type Repository {
+  pullRequest(number: Int!): PullRequest
+}
+
+type PullRequest {
+  merged: Boolean!
+  body: String!
+  mergedBy: Actor
+  timelineItems(last: Int, itemTypes: [PullRequestTimelineItemsItemType!]): PullRequestTimelineItemsConnection!
+  reviews(last: Int): PullRequestReviewConnection!
+  commits(last: Int): PullRequestCommitConnection!
+}
+
+interface Actor {
+  login: String!
+}
+
+type User implements Actor {
+  login: String!
+}
+
+type Bot implements Actor {
+  login: String!
+}
+
+type EnterpriseUserAccount implements Actor {
+  login: String!
+}
+
+type Mannequin implements Actor {
+  login: String!
+}
+
+type Organization implements Actor {
+  login: String!
+}
+
+type Team {
+  slug: String!
+}
+
+type PullRequestTimelineItemsConnection {
+  nodes: [PullRequestTimelineItems!]
+}
+
+union PullRequestTimelineItems =
+    PullRequestReview
+  | IssueComment
+  | ReviewRequestedEvent
+  | ReviewRequestRemovedEvent
+  | ReviewDismissedEvent
+  | MergedEvent
+  | ClosedEvent
+  | ReopenedEvent
+  | ReadyForReviewEvent
+  | ConvertToDraftEvent
+  | LabeledEvent
+  | UnlabeledEvent
+  | AssignedEvent
+  | UnassignedEvent
+
+enum PullRequestTimelineItemsItemType {
+  PULL_REQUEST_REVIEW
+  ISSUE_COMMENT
+  REVIEW_REQUESTED_EVENT
+  REVIEW_REQUEST_REMOVED_EVENT
+  REVIEW_DISMISSED_EVENT
+  MERGED_EVENT
+  CLOSED_EVENT
+  REOPENED_EVENT
+  READY_FOR_REVIEW_EVENT
+  CONVERT_TO_DRAFT_EVENT
+  LABELED_EVENT
+  UNLABELED_EVENT
+  ASSIGNED_EVENT
+  UNASSIGNED_EVENT
+}
+
+enum PullRequestReviewState {
+  APPROVED
+  CHANGES_REQUESTED
+  COMMENTED
+  DISMISSED
+  PENDING
+}
+
+type PullRequestReview {
+  state: PullRequestReviewState!
+  author: Actor
+  body: String!
+  comments(last: Int): PullRequestReviewCommentConnection!
+  createdAt: DateTime!
+  submittedAt: DateTime!
+}
+
+type PullRequestReviewConnection {
+  nodes: [PullRequestReview!]
+}
+
+type PullRequestReviewCommentConnection {
+  nodes: [PullRequestReviewComment!]
+}
+
+type PullRequestReviewComment {
+  author: Actor
+  body: String!
+  createdAt: DateTime!
+}
+
+type IssueComment {
+  author: Actor
+  body: String!
+  createdAt: DateTime!
+}
+
+type ReviewRequestedEvent {
+  actor: Actor
+  requestedReviewer: RequestedReviewer
+  createdAt: DateTime!
+}
+
+type ReviewRequestRemovedEvent {
+  actor: Actor
+  requestedReviewer: RequestedReviewer
+  createdAt: DateTime!
+}
+
+union RequestedReviewer = User | Bot | Team
+
+type ReviewDismissedEvent {
+  actor: Actor
+  dismissalMessage: String
+  createdAt: DateTime!
+}
+
+type MergedEvent {
+  actor: Actor
+  createdAt: DateTime!
+}
+
+type ClosedEvent {
+  actor: Actor
+  createdAt: DateTime!
+}
+
+type ReopenedEvent {
+  actor: Actor
+  createdAt: DateTime!
+}
+
+type ReadyForReviewEvent {
+  actor: Actor
+  createdAt: DateTime!
+}
+
+type ConvertToDraftEvent {
+  actor: Actor
+  createdAt: DateTime!
+}
+
+type LabeledEvent {
+  actor: Actor
+  label: Label
+  createdAt: DateTime!
+}
+
+type UnlabeledEvent {
+  actor: Actor
+  label: Label
+  createdAt: DateTime!
+}
+
+type AssignedEvent {
+  actor: Actor
+  assignee: Assignee
+  createdAt: DateTime!
+}
+
+type UnassignedEvent {
+  actor: Actor
+  assignee: Assignee
+  createdAt: DateTime!
+}
+
+union Assignee = User | Bot | Mannequin | Organization
+
+type Label {
+  name: String!
+}
+
+type PullRequestCommitConnection {
+  nodes: [PullRequestCommit!]
+}
+
+type PullRequestCommit {
+  commit: Commit!
+}
+
+type Commit {
+  messageHeadline: String!
+  authoredDate: DateTime!
+  author: GitActor
+  committer: GitActor
+}
+
+type GitActor {
+  name: String
+  user: CommitUser
+}
+
+type CommitUser {
+  login: String!
+}

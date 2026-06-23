@@ -1,6 +1,7 @@
 use std::time::Duration;
 
 use anyhow::{Context, Result};
+use graphql_client::{GraphQLQuery, Response};
 use reqwest::header::{
     ACCEPT, AUTHORIZATION, HeaderMap, HeaderName, HeaderValue, LAST_MODIFIED, USER_AGENT,
 };
@@ -17,391 +18,27 @@ use super::model::{
 };
 use super::timeline::timeline_url;
 
+type DateTime = String;
+
+#[derive(GraphQLQuery)]
+#[graphql(
+    schema_path = "src/github/graphql/github-schema.graphql",
+    query_path = "src/github/graphql/pull_request_enrichment.graphql",
+    response_derives = "Debug, Clone"
+)]
+struct PullRequestEnrichment;
+
+use pull_request_enrichment as gql;
+
 const API_VERSION_HEADER: HeaderName = HeaderName::from_static("x-github-api-version");
 const POLL_INTERVAL_HEADER: HeaderName = HeaderName::from_static("x-poll-interval");
-const PULL_REQUEST_ENRICHMENT_QUERY: &str = r#"
-query PullRequestEnrichment($owner: String!, $name: String!, $number: Int!) {
-  repository(owner: $owner, name: $name) {
-    pullRequest(number: $number) {
-      merged
-      body
-      mergedBy {
-        __typename
-        ... on User { login }
-        ... on Bot { login }
-      }
-      timelineItems(
-        last: 20
-        itemTypes: [
-          PULL_REQUEST_REVIEW
-          ISSUE_COMMENT
-          REVIEW_REQUESTED_EVENT
-          REVIEW_REQUEST_REMOVED_EVENT
-          REVIEW_DISMISSED_EVENT
-          MERGED_EVENT
-          CLOSED_EVENT
-          REOPENED_EVENT
-          READY_FOR_REVIEW_EVENT
-          CONVERT_TO_DRAFT_EVENT
-          LABELED_EVENT
-          UNLABELED_EVENT
-          ASSIGNED_EVENT
-          UNASSIGNED_EVENT
-        ]
-      ) {
-        nodes {
-          __typename
-          ... on PullRequestReview {
-            state
-            author {
-              __typename
-              login
-            }
-            body
-            comments(last: 10) {
-              nodes {
-                author {
-                  __typename
-                  login
-                }
-                body
-                createdAt
-              }
-            }
-            createdAt
-          }
-          ... on IssueComment {
-            author {
-              __typename
-              login
-            }
-            body
-            createdAt
-          }
-          ... on ReviewRequestedEvent {
-            actor {
-              __typename
-              login
-            }
-            requestedReviewer {
-              __typename
-              ... on User { login }
-              ... on Bot { login }
-              ... on Team { slug }
-            }
-            createdAt
-          }
-          ... on ReviewRequestRemovedEvent {
-            actor {
-              __typename
-              login
-            }
-            requestedReviewer {
-              __typename
-              ... on User { login }
-              ... on Bot { login }
-              ... on Team { slug }
-            }
-            createdAt
-          }
-          ... on ReviewDismissedEvent {
-            actor {
-              __typename
-              login
-            }
-            dismissalMessage
-            createdAt
-          }
-          ... on MergedEvent {
-            actor {
-              __typename
-              login
-            }
-            createdAt
-          }
-          ... on ClosedEvent {
-            actor {
-              __typename
-              login
-            }
-            createdAt
-          }
-          ... on ReopenedEvent {
-            actor {
-              __typename
-              login
-            }
-            createdAt
-          }
-          ... on ReadyForReviewEvent {
-            actor {
-              __typename
-              login
-            }
-            createdAt
-          }
-          ... on ConvertToDraftEvent {
-            actor {
-              __typename
-              login
-            }
-            createdAt
-          }
-          ... on LabeledEvent {
-            actor {
-              __typename
-              login
-            }
-            label { name }
-            createdAt
-          }
-          ... on UnlabeledEvent {
-            actor {
-              __typename
-              login
-            }
-            label { name }
-            createdAt
-          }
-          ... on AssignedEvent {
-            actor {
-              __typename
-              login
-            }
-            assignee {
-              __typename
-              ... on User { login }
-              ... on Bot { login }
-            }
-            createdAt
-          }
-          ... on UnassignedEvent {
-            actor {
-              __typename
-              login
-            }
-            assignee {
-              __typename
-              ... on User { login }
-              ... on Bot { login }
-            }
-            createdAt
-          }
-        }
-      }
-      commits(last: 10) {
-        nodes {
-          commit {
-            messageHeadline
-            authoredDate
-            author {
-              name
-              user { login }
-            }
-            committer {
-              name
-              user { login }
-            }
-          }
-        }
-      }
-    }
-  }
-}
-"#;
 
-#[derive(Debug, Deserialize)]
-struct GraphQlResponse<T> {
-    data: Option<T>,
-    #[serde(default)]
-    errors: Vec<GraphQlError>,
-}
-
-#[derive(Debug, Deserialize)]
-struct GraphQlError {
-    message: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct GraphQlPullRequestPayload {
-    repository: Option<GraphQlRepository>,
-}
-
-#[derive(Debug, Deserialize)]
-struct GraphQlRepository {
-    #[serde(rename = "pullRequest")]
-    pull_request: Option<GraphQlPullRequest>,
-}
-
-#[derive(Debug, Deserialize)]
-struct GraphQlPullRequest {
-    merged: bool,
-    body: Option<String>,
-    #[serde(rename = "mergedBy")]
-    merged_by: Option<GraphQlActor>,
-    commits: GraphQlCommitConnection,
-    #[serde(rename = "timelineItems")]
-    timeline_items: GraphQlTimelineConnection,
-}
-
-#[derive(Debug, Deserialize)]
-struct GraphQlTimelineConnection {
-    nodes: Vec<GraphQlTimelineItem>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(tag = "__typename")]
-enum GraphQlTimelineItem {
-    PullRequestReview {
-        state: Option<String>,
-        author: Option<GraphQlActor>,
-        body: Option<String>,
-        comments: GraphQlReviewCommentConnection,
-        #[serde(rename = "createdAt")]
-        created_at: String,
-    },
-
-    IssueComment {
-        author: Option<GraphQlActor>,
-        body: Option<String>,
-        #[serde(rename = "createdAt")]
-        created_at: String,
-    },
-    ReviewRequestedEvent {
-        actor: Option<GraphQlActor>,
-        #[serde(rename = "requestedReviewer")]
-        requested_reviewer: Option<GraphQlRequestedReviewer>,
-        #[serde(rename = "createdAt")]
-        created_at: String,
-    },
-    ReviewRequestRemovedEvent {
-        actor: Option<GraphQlActor>,
-        #[serde(rename = "requestedReviewer")]
-        requested_reviewer: Option<GraphQlRequestedReviewer>,
-        #[serde(rename = "createdAt")]
-        created_at: String,
-    },
-    ReviewDismissedEvent {
-        actor: Option<GraphQlActor>,
-        #[serde(rename = "dismissalMessage")]
-        dismissal_message: Option<String>,
-        #[serde(rename = "createdAt")]
-        created_at: String,
-    },
-    MergedEvent {
-        actor: Option<GraphQlActor>,
-        #[serde(rename = "createdAt")]
-        created_at: String,
-    },
-    ClosedEvent {
-        actor: Option<GraphQlActor>,
-        #[serde(rename = "createdAt")]
-        created_at: String,
-    },
-    ReopenedEvent {
-        actor: Option<GraphQlActor>,
-        #[serde(rename = "createdAt")]
-        created_at: String,
-    },
-    ReadyForReviewEvent {
-        actor: Option<GraphQlActor>,
-        #[serde(rename = "createdAt")]
-        created_at: String,
-    },
-    ConvertToDraftEvent {
-        actor: Option<GraphQlActor>,
-        #[serde(rename = "createdAt")]
-        created_at: String,
-    },
-    LabeledEvent {
-        actor: Option<GraphQlActor>,
-        label: Option<GraphQlLabel>,
-        #[serde(rename = "createdAt")]
-        created_at: String,
-    },
-    UnlabeledEvent {
-        actor: Option<GraphQlActor>,
-        label: Option<GraphQlLabel>,
-        #[serde(rename = "createdAt")]
-        created_at: String,
-    },
-    AssignedEvent {
-        actor: Option<GraphQlActor>,
-        assignee: Option<GraphQlActor>,
-        #[serde(rename = "createdAt")]
-        created_at: String,
-    },
-    UnassignedEvent {
-        actor: Option<GraphQlActor>,
-        assignee: Option<GraphQlActor>,
-        #[serde(rename = "createdAt")]
-        created_at: String,
-    },
-}
-
-#[derive(Debug, Deserialize)]
-struct GraphQlReviewCommentConnection {
-    nodes: Vec<GraphQlReviewComment>,
-}
-
-#[derive(Debug, Deserialize)]
-struct GraphQlReviewComment {
-    author: Option<GraphQlActor>,
-    body: Option<String>,
-    #[serde(rename = "createdAt")]
-    created_at: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct GraphQlLabel {
-    name: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct GraphQlCommitConnection {
-    nodes: Vec<GraphQlCommitNode>,
-}
-
-#[derive(Debug, Deserialize)]
-struct GraphQlCommitNode {
-    commit: GraphQlCommit,
-}
-
-#[derive(Debug, Deserialize)]
-struct GraphQlCommit {
-    #[serde(rename = "messageHeadline")]
-    message_headline: String,
-    #[serde(rename = "authoredDate")]
-    authored_date: String,
-    author: Option<GraphQlCommitSignature>,
-    committer: Option<GraphQlCommitSignature>,
-}
-
-#[derive(Debug, Deserialize)]
-struct GraphQlCommitSignature {
-    name: Option<String>,
-    user: Option<GraphQlCommitUser>,
-}
-
-#[derive(Debug, Deserialize)]
-struct GraphQlCommitUser {
-    login: String,
-}
-
-#[derive(Clone, Debug, Deserialize)]
-struct GraphQlActor {
-    #[serde(rename = "__typename")]
-    kind: String,
-    login: String,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(tag = "__typename")]
-enum GraphQlRequestedReviewer {
-    User { login: String },
-    Bot { login: String },
-    Team { slug: String },
-}
+type GraphQlPullRequest = gql::PullRequestEnrichmentRepositoryPullRequest;
+type GraphQlTimelineItem = gql::PullRequestEnrichmentRepositoryPullRequestTimelineItemsNodes;
+type GraphQlReview = gql::ReviewFields;
+type GraphQlReviewComment = gql::ReviewFieldsCommentsNodes;
+type GraphQlReviewCommentConnection = gql::ReviewFieldsComments;
+type GraphQlCommit = gql::PullRequestEnrichmentRepositoryPullRequestCommitsNodesCommit;
 
 #[derive(Debug)]
 struct PullRequestSubject {
@@ -523,27 +160,28 @@ impl GitHubClient {
     pub async fn poll_notifications(
         &self,
         config: &GitHubConfig,
-        last_modified: Option<&str>,
+        _last_modified: Option<&str>,
     ) -> Result<PollResult> {
-        // Poll unconditionally: GitHub can return 304 for If-Modified-Since even when
-        // existing unread notification threads have newer updated_at values.
-        let request = self
+        let mut request = self
             .client
             .get(self.endpoint("/notifications")?)
-            .headers(self.headers()?)
-            .query(&[
-                ("all", String::from("false")),
-                (
-                    "participating",
-                    if config.participating {
-                        String::from("true")
-                    } else {
-                        String::from("false")
-                    },
-                ),
-                ("per_page", config.per_page.to_string()),
-                ("page", String::from("1")),
-            ]);
+            .headers(self.headers()?);
+        request = request.query(&[
+            ("all", "false"),
+            (
+                "participating",
+                if config.participating {
+                    "true"
+                } else {
+                    "false"
+                },
+            ),
+            ("page", "1"),
+        ]);
+        let request = request.query(&[
+            ("per_page", config.per_page.to_string()),
+            ("page", String::from("1")),
+        ]);
         let response = request
             .send()
             .await
@@ -552,7 +190,7 @@ impl GitHubClient {
         if response.status() == StatusCode::NOT_MODIFIED {
             return Ok(PollResult {
                 notifications: Vec::new(),
-                last_modified: last_modified.map(String::from),
+                last_modified: None,
                 poll_interval_secs: parse_poll_interval(response.headers()),
             });
         }
@@ -599,28 +237,26 @@ impl GitHubClient {
             .client
             .post(self.endpoint("/graphql")?)
             .headers(self.headers()?)
-            .json(&json!({
-                "query": PULL_REQUEST_ENRICHMENT_QUERY,
-                "variables": {
-                    "owner": subject.owner,
-                    "name": subject.repo,
-                    "number": subject.number,
-                }
-            }))
+            .json(&PullRequestEnrichment::build_query(
+                pull_request_enrichment::Variables {
+                    owner: subject.owner,
+                    name: subject.repo,
+                    number: subject.number,
+                },
+            ))
             .send()
             .await
             .context("failed to fetch pull request enrichment")?
             .error_for_status()
             .context("pull request enrichment request failed")?
-            .json::<GraphQlResponse<GraphQlPullRequestPayload>>()
+            .json::<Response<pull_request_enrichment::ResponseData>>()
             .await
             .context("failed to decode pull request enrichment")?;
 
-        if !response.errors.is_empty() {
+        if let Some(errors) = response.errors.filter(|errors| !errors.is_empty()) {
             anyhow::bail!(
                 "pull request enrichment query failed: {}",
-                response
-                    .errors
+                errors
                     .iter()
                     .map(|error| error.message.as_str())
                     .collect::<Vec<_>>()
@@ -637,8 +273,8 @@ impl GitHubClient {
         Ok((
             PullRequestDetails {
                 merged: pull_request.merged,
-                merged_by: pull_request.merged_by.clone().map(graphql_actor_to_user),
-                body: pull_request.body.clone(),
+                merged_by: pull_request.merged_by.as_ref().map(graphql_actor_to_user),
+                body: Some(pull_request.body.clone()),
             },
             graphql_timeline_to_rest(&pull_request),
         ))
@@ -817,14 +453,24 @@ fn graphql_timeline_to_rest(pull_request: &GraphQlPullRequest) -> Vec<TimelineEv
         .timeline_items
         .nodes
         .iter()
+        .flatten()
         .map(graphql_timeline_event)
         .collect::<Vec<_>>();
 
     timeline.extend(
         pull_request
+            .reviews
+            .nodes
+            .iter()
+            .flatten()
+            .map(graphql_review_event),
+    );
+    timeline.extend(
+        pull_request
             .commits
             .nodes
             .iter()
+            .flatten()
             .map(|node| graphql_commit_event(&node.commit)),
     );
 
@@ -833,168 +479,148 @@ fn graphql_timeline_to_rest(pull_request: &GraphQlPullRequest) -> Vec<TimelineEv
 
 fn graphql_timeline_event(item: &GraphQlTimelineItem) -> TimelineEvent {
     match item {
-        GraphQlTimelineItem::PullRequestReview {
-            state,
-            author,
-            body,
-            comments,
-            created_at,
-        } => {
-            let latest_comment = latest_review_comment(comments);
-            TimelineEvent {
-                event: Some(String::from("reviewed")),
-                actor: author
-                    .clone()
-                    .or_else(|| latest_comment.and_then(|comment| comment.author.clone()))
-                    .map(graphql_actor_to_user),
-                body: review_detail(body, latest_comment),
-                state: state.clone(),
-                created_at: Some(created_at.clone()),
-                submitted_at: Some(created_at.clone()),
-                ..TimelineEvent::default()
-            }
-        }
-        GraphQlTimelineItem::IssueComment {
-            author,
-            body,
-            created_at,
-        } => TimelineEvent {
+        GraphQlTimelineItem::PullRequestReview(review) => graphql_review_event(review),
+        GraphQlTimelineItem::IssueComment(comment) => TimelineEvent {
             event: Some(String::from("commented")),
-            actor: author.clone().map(graphql_actor_to_user),
-            body: body.clone(),
-            created_at: Some(created_at.clone()),
+            actor: comment.author.as_ref().map(graphql_actor_to_user),
+            body: Some(comment.body.clone()),
+            created_at: Some(comment.created_at.clone()),
             ..TimelineEvent::default()
         },
-        GraphQlTimelineItem::ReviewRequestedEvent {
-            actor,
-            requested_reviewer,
-            created_at,
-        } => TimelineEvent {
+        GraphQlTimelineItem::ReviewRequestedEvent(event) => TimelineEvent {
             event: Some(String::from("review_requested")),
-            actor: actor.clone().map(graphql_actor_to_user),
-            review_requester: actor.clone().map(graphql_actor_to_user),
-            requested_reviewer: requested_reviewer
+            actor: event.actor.as_ref().map(graphql_actor_to_user),
+            review_requester: event.actor.as_ref().map(graphql_actor_to_user),
+            requested_reviewer: event
+                .requested_reviewer
                 .as_ref()
-                .and_then(graphql_requested_reviewer_user),
-            requested_team: requested_reviewer
+                .and_then(review_requested_reviewer_user),
+            requested_team: event
+                .requested_reviewer
                 .as_ref()
-                .and_then(graphql_requested_reviewer_team),
-            created_at: Some(created_at.clone()),
+                .and_then(review_requested_reviewer_team),
+            created_at: Some(event.created_at.clone()),
             ..TimelineEvent::default()
         },
-        GraphQlTimelineItem::ReviewRequestRemovedEvent {
-            actor,
-            requested_reviewer,
-            created_at,
-        } => TimelineEvent {
+        GraphQlTimelineItem::ReviewRequestRemovedEvent(event) => TimelineEvent {
             event: Some(String::from("review_request_removed")),
-            actor: actor.clone().map(graphql_actor_to_user),
-            review_requester: actor.clone().map(graphql_actor_to_user),
-            requested_reviewer: requested_reviewer
+            actor: event.actor.as_ref().map(graphql_actor_to_user),
+            review_requester: event.actor.as_ref().map(graphql_actor_to_user),
+            requested_reviewer: event
+                .requested_reviewer
                 .as_ref()
-                .and_then(graphql_requested_reviewer_user),
-            requested_team: requested_reviewer
+                .and_then(review_request_removed_reviewer_user),
+            requested_team: event
+                .requested_reviewer
                 .as_ref()
-                .and_then(graphql_requested_reviewer_team),
-            created_at: Some(created_at.clone()),
+                .and_then(review_request_removed_reviewer_team),
+            created_at: Some(event.created_at.clone()),
             ..TimelineEvent::default()
         },
-        GraphQlTimelineItem::ReviewDismissedEvent {
-            actor,
-            dismissal_message,
-            created_at,
-        } => TimelineEvent {
+        GraphQlTimelineItem::ReviewDismissedEvent(event) => TimelineEvent {
             event: Some(String::from("review_dismissed")),
-            actor: actor.clone().map(graphql_actor_to_user),
+            actor: event.actor.as_ref().map(graphql_actor_to_user),
             dismissed_review: Some(super::model::DismissedReview {
-                dismissal_message: dismissal_message.clone(),
+                dismissal_message: event.dismissal_message.clone(),
             }),
-            created_at: Some(created_at.clone()),
+            created_at: Some(event.created_at.clone()),
             ..TimelineEvent::default()
         },
-        GraphQlTimelineItem::MergedEvent { actor, created_at } => simple_timeline_event(
+        GraphQlTimelineItem::MergedEvent(event) => simple_timeline_event(
             "merged",
-            actor.clone().map(graphql_actor_to_user),
-            Some(created_at.clone()),
+            event.actor.as_ref().map(graphql_actor_to_user),
+            Some(event.created_at.clone()),
         ),
-        GraphQlTimelineItem::ClosedEvent { actor, created_at } => simple_timeline_event(
+        GraphQlTimelineItem::ClosedEvent(event) => simple_timeline_event(
             "closed",
-            actor.clone().map(graphql_actor_to_user),
-            Some(created_at.clone()),
+            event.actor.as_ref().map(graphql_actor_to_user),
+            Some(event.created_at.clone()),
         ),
-        GraphQlTimelineItem::ReopenedEvent { actor, created_at } => simple_timeline_event(
+        GraphQlTimelineItem::ReopenedEvent(event) => simple_timeline_event(
             "reopened",
-            actor.clone().map(graphql_actor_to_user),
-            Some(created_at.clone()),
+            event.actor.as_ref().map(graphql_actor_to_user),
+            Some(event.created_at.clone()),
         ),
-        GraphQlTimelineItem::ReadyForReviewEvent { actor, created_at } => simple_timeline_event(
+        GraphQlTimelineItem::ReadyForReviewEvent(event) => simple_timeline_event(
             "ready_for_review",
-            actor.clone().map(graphql_actor_to_user),
-            Some(created_at.clone()),
+            event.actor.as_ref().map(graphql_actor_to_user),
+            Some(event.created_at.clone()),
         ),
-        GraphQlTimelineItem::ConvertToDraftEvent { actor, created_at } => simple_timeline_event(
+        GraphQlTimelineItem::ConvertToDraftEvent(event) => simple_timeline_event(
             "convert_to_draft",
-            actor.clone().map(graphql_actor_to_user),
-            Some(created_at.clone()),
+            event.actor.as_ref().map(graphql_actor_to_user),
+            Some(event.created_at.clone()),
         ),
-        GraphQlTimelineItem::LabeledEvent {
-            actor,
-            label,
-            created_at,
-        } => TimelineEvent {
+        GraphQlTimelineItem::LabeledEvent(event) => TimelineEvent {
             event: Some(String::from("labeled")),
-            actor: actor.clone().map(graphql_actor_to_user),
-            label: label.as_ref().map(|label| super::model::Label {
+            actor: event.actor.as_ref().map(graphql_actor_to_user),
+            label: event.label.as_ref().map(|label| super::model::Label {
                 name: label.name.clone(),
             }),
-            created_at: Some(created_at.clone()),
+            created_at: Some(event.created_at.clone()),
             ..TimelineEvent::default()
         },
-        GraphQlTimelineItem::UnlabeledEvent {
-            actor,
-            label,
-            created_at,
-        } => TimelineEvent {
+        GraphQlTimelineItem::UnlabeledEvent(event) => TimelineEvent {
             event: Some(String::from("unlabeled")),
-            actor: actor.clone().map(graphql_actor_to_user),
-            label: label.as_ref().map(|label| super::model::Label {
+            actor: event.actor.as_ref().map(graphql_actor_to_user),
+            label: event.label.as_ref().map(|label| super::model::Label {
                 name: label.name.clone(),
             }),
-            created_at: Some(created_at.clone()),
+            created_at: Some(event.created_at.clone()),
             ..TimelineEvent::default()
         },
-        GraphQlTimelineItem::AssignedEvent {
-            actor,
-            assignee,
-            created_at,
-        } => TimelineEvent {
+        GraphQlTimelineItem::AssignedEvent(event) => TimelineEvent {
             event: Some(String::from("assigned")),
-            actor: actor.clone().map(graphql_actor_to_user),
-            assignee: assignee.clone().map(graphql_actor_to_user),
-            created_at: Some(created_at.clone()),
+            actor: event.actor.as_ref().map(graphql_actor_to_user),
+            assignee: event.assignee.as_ref().map(assigned_assignee_to_user),
+            created_at: Some(event.created_at.clone()),
             ..TimelineEvent::default()
         },
-        GraphQlTimelineItem::UnassignedEvent {
-            actor,
-            assignee,
-            created_at,
-        } => TimelineEvent {
+        GraphQlTimelineItem::UnassignedEvent(event) => TimelineEvent {
             event: Some(String::from("unassigned")),
-            actor: actor.clone().map(graphql_actor_to_user),
-            assignee: assignee.clone().map(graphql_actor_to_user),
-            created_at: Some(created_at.clone()),
+            actor: event.actor.as_ref().map(graphql_actor_to_user),
+            assignee: event.assignee.as_ref().map(unassigned_assignee_to_user),
+            created_at: Some(event.created_at.clone()),
             ..TimelineEvent::default()
         },
     }
 }
 
-fn review_detail(
-    body: &Option<String>,
-    fallback_comment: Option<&GraphQlReviewComment>,
-) -> Option<String> {
-    body.clone()
-        .filter(|body| !body.trim().is_empty())
-        .or_else(|| fallback_comment.and_then(|comment| comment.body.clone()))
+fn graphql_review_event(review: &GraphQlReview) -> TimelineEvent {
+    let latest_comment = latest_review_comment(&review.comments);
+    let actor = if let Some(author) = review.author.as_ref() {
+        Some(graphql_actor_to_user(author))
+    } else {
+        latest_comment
+            .and_then(|comment| comment.author.as_ref())
+            .map(graphql_actor_to_user)
+    };
+    TimelineEvent {
+        event: Some(String::from("reviewed")),
+        actor,
+        body: review_detail(&review.body, latest_comment),
+        state: Some(review_state(&review.state)),
+        created_at: Some(review.created_at.clone()),
+        submitted_at: Some(review.submitted_at.clone()),
+        ..TimelineEvent::default()
+    }
+}
+
+fn review_state(state: &gql::PullRequestReviewState) -> String {
+    match state {
+        gql::PullRequestReviewState::APPROVED => String::from("APPROVED"),
+        gql::PullRequestReviewState::CHANGES_REQUESTED => String::from("CHANGES_REQUESTED"),
+        gql::PullRequestReviewState::COMMENTED => String::from("COMMENTED"),
+        gql::PullRequestReviewState::DISMISSED => String::from("DISMISSED"),
+        gql::PullRequestReviewState::PENDING => String::from("PENDING"),
+        gql::PullRequestReviewState::Other(state) => state.clone(),
+    }
+}
+
+fn review_detail(body: &str, fallback_comment: Option<&GraphQlReviewComment>) -> Option<String> {
+    (!body.trim().is_empty())
+        .then(|| String::from(body))
+        .or_else(|| fallback_comment.map(|comment| comment.body.clone()))
 }
 
 fn latest_review_comment(
@@ -1003,12 +629,8 @@ fn latest_review_comment(
     comments
         .nodes
         .iter()
-        .filter(|comment| {
-            comment
-                .body
-                .as_deref()
-                .is_some_and(|body| !body.trim().is_empty())
-        })
+        .flatten()
+        .filter(|comment| !comment.body.trim().is_empty())
         .max_by_key(|comment| comment.created_at.as_str())
 }
 
@@ -1041,42 +663,249 @@ fn simple_timeline_event(
     }
 }
 
-fn graphql_actor_to_user(actor: GraphQlActor) -> super::model::User {
+trait GeneratedActor {
+    fn login(&self) -> &str;
+    fn kind(&self) -> &'static str;
+}
+
+macro_rules! impl_generated_actor {
+    ($actor:ty, $on:ty) => {
+        impl GeneratedActor for $actor {
+            fn login(&self) -> &str {
+                &self.login
+            }
+
+            fn kind(&self) -> &'static str {
+                match &self.on {
+                    <$on>::Bot => "Bot",
+                    <$on>::EnterpriseUserAccount => "EnterpriseUserAccount",
+                    <$on>::Mannequin => "Mannequin",
+                    <$on>::Organization => "Organization",
+                    <$on>::User => "User",
+                }
+            }
+        }
+    };
+}
+
+impl_generated_actor!(
+    gql::PullRequestEnrichmentRepositoryPullRequestMergedBy,
+    gql::PullRequestEnrichmentRepositoryPullRequestMergedByOn
+);
+impl_generated_actor!(gql::ReviewFieldsAuthor, gql::ReviewFieldsAuthorOn);
+impl_generated_actor!(
+    gql::ReviewFieldsCommentsNodesAuthor,
+    gql::ReviewFieldsCommentsNodesAuthorOn
+);
+impl_generated_actor!(
+    gql::PullRequestEnrichmentRepositoryPullRequestTimelineItemsNodesOnIssueCommentAuthor,
+    gql::PullRequestEnrichmentRepositoryPullRequestTimelineItemsNodesOnIssueCommentAuthorOn
+);
+impl_generated_actor!(
+    gql::PullRequestEnrichmentRepositoryPullRequestTimelineItemsNodesOnReviewRequestedEventActor,
+    gql::PullRequestEnrichmentRepositoryPullRequestTimelineItemsNodesOnReviewRequestedEventActorOn
+);
+impl_generated_actor!(
+    gql::PullRequestEnrichmentRepositoryPullRequestTimelineItemsNodesOnReviewRequestRemovedEventActor,
+    gql::PullRequestEnrichmentRepositoryPullRequestTimelineItemsNodesOnReviewRequestRemovedEventActorOn
+);
+impl_generated_actor!(
+    gql::PullRequestEnrichmentRepositoryPullRequestTimelineItemsNodesOnReviewDismissedEventActor,
+    gql::PullRequestEnrichmentRepositoryPullRequestTimelineItemsNodesOnReviewDismissedEventActorOn
+);
+impl_generated_actor!(
+    gql::PullRequestEnrichmentRepositoryPullRequestTimelineItemsNodesOnMergedEventActor,
+    gql::PullRequestEnrichmentRepositoryPullRequestTimelineItemsNodesOnMergedEventActorOn
+);
+impl_generated_actor!(
+    gql::PullRequestEnrichmentRepositoryPullRequestTimelineItemsNodesOnClosedEventActor,
+    gql::PullRequestEnrichmentRepositoryPullRequestTimelineItemsNodesOnClosedEventActorOn
+);
+impl_generated_actor!(
+    gql::PullRequestEnrichmentRepositoryPullRequestTimelineItemsNodesOnReopenedEventActor,
+    gql::PullRequestEnrichmentRepositoryPullRequestTimelineItemsNodesOnReopenedEventActorOn
+);
+impl_generated_actor!(
+    gql::PullRequestEnrichmentRepositoryPullRequestTimelineItemsNodesOnReadyForReviewEventActor,
+    gql::PullRequestEnrichmentRepositoryPullRequestTimelineItemsNodesOnReadyForReviewEventActorOn
+);
+impl_generated_actor!(
+    gql::PullRequestEnrichmentRepositoryPullRequestTimelineItemsNodesOnConvertToDraftEventActor,
+    gql::PullRequestEnrichmentRepositoryPullRequestTimelineItemsNodesOnConvertToDraftEventActorOn
+);
+impl_generated_actor!(
+    gql::PullRequestEnrichmentRepositoryPullRequestTimelineItemsNodesOnLabeledEventActor,
+    gql::PullRequestEnrichmentRepositoryPullRequestTimelineItemsNodesOnLabeledEventActorOn
+);
+impl_generated_actor!(
+    gql::PullRequestEnrichmentRepositoryPullRequestTimelineItemsNodesOnUnlabeledEventActor,
+    gql::PullRequestEnrichmentRepositoryPullRequestTimelineItemsNodesOnUnlabeledEventActorOn
+);
+impl_generated_actor!(
+    gql::PullRequestEnrichmentRepositoryPullRequestTimelineItemsNodesOnAssignedEventActor,
+    gql::PullRequestEnrichmentRepositoryPullRequestTimelineItemsNodesOnAssignedEventActorOn
+);
+impl_generated_actor!(
+    gql::PullRequestEnrichmentRepositoryPullRequestTimelineItemsNodesOnUnassignedEventActor,
+    gql::PullRequestEnrichmentRepositoryPullRequestTimelineItemsNodesOnUnassignedEventActorOn
+);
+fn graphql_actor_to_user(actor: &impl GeneratedActor) -> super::model::User {
     super::model::User {
-        login: actor.login,
-        kind: Some(actor.kind),
+        login: String::from(actor.login()),
+        kind: Some(String::from(actor.kind())),
     }
 }
 
-fn graphql_requested_reviewer_user(
-    reviewer: &GraphQlRequestedReviewer,
+fn assigned_assignee_to_user(
+    assignee: &gql::PullRequestEnrichmentRepositoryPullRequestTimelineItemsNodesOnAssignedEventAssignee,
+) -> super::model::User {
+    match assignee {
+        gql::PullRequestEnrichmentRepositoryPullRequestTimelineItemsNodesOnAssignedEventAssignee::Bot(bot) => {
+            super::model::User {
+                login: bot.login.clone(),
+                kind: Some(String::from("Bot")),
+            }
+        }
+        gql::PullRequestEnrichmentRepositoryPullRequestTimelineItemsNodesOnAssignedEventAssignee::Mannequin(user) => {
+            super::model::User {
+                login: user.login.clone(),
+                kind: Some(String::from("Mannequin")),
+            }
+        }
+        gql::PullRequestEnrichmentRepositoryPullRequestTimelineItemsNodesOnAssignedEventAssignee::Organization(org) => {
+            super::model::User {
+                login: org.login.clone(),
+                kind: Some(String::from("Organization")),
+            }
+        }
+        gql::PullRequestEnrichmentRepositoryPullRequestTimelineItemsNodesOnAssignedEventAssignee::User(user) => {
+            super::model::User {
+                login: user.login.clone(),
+                kind: Some(String::from("User")),
+            }
+        }
+    }
+}
+
+fn unassigned_assignee_to_user(
+    assignee: &gql::PullRequestEnrichmentRepositoryPullRequestTimelineItemsNodesOnUnassignedEventAssignee,
+) -> super::model::User {
+    match assignee {
+        gql::PullRequestEnrichmentRepositoryPullRequestTimelineItemsNodesOnUnassignedEventAssignee::Bot(bot) => {
+            super::model::User {
+                login: bot.login.clone(),
+                kind: Some(String::from("Bot")),
+            }
+        }
+        gql::PullRequestEnrichmentRepositoryPullRequestTimelineItemsNodesOnUnassignedEventAssignee::Mannequin(user) => {
+            super::model::User {
+                login: user.login.clone(),
+                kind: Some(String::from("Mannequin")),
+            }
+        }
+        gql::PullRequestEnrichmentRepositoryPullRequestTimelineItemsNodesOnUnassignedEventAssignee::Organization(org) => {
+            super::model::User {
+                login: org.login.clone(),
+                kind: Some(String::from("Organization")),
+            }
+        }
+        gql::PullRequestEnrichmentRepositoryPullRequestTimelineItemsNodesOnUnassignedEventAssignee::User(user) => {
+            super::model::User {
+                login: user.login.clone(),
+                kind: Some(String::from("User")),
+            }
+        }
+    }
+}
+
+fn review_requested_reviewer_user(
+    reviewer: &gql::PullRequestEnrichmentRepositoryPullRequestTimelineItemsNodesOnReviewRequestedEventRequestedReviewer,
 ) -> Option<super::model::User> {
     match reviewer {
-        GraphQlRequestedReviewer::User { login } | GraphQlRequestedReviewer::Bot { login } => {
-            Some(super::model::User {
-                login: login.clone(),
-                kind: login.ends_with("[bot]").then(|| String::from("Bot")),
-            })
-        }
-        GraphQlRequestedReviewer::Team { .. } => None,
+        gql::PullRequestEnrichmentRepositoryPullRequestTimelineItemsNodesOnReviewRequestedEventRequestedReviewer::User(user) => Some(super::model::User {
+            login: user.login.clone(),
+            kind: None,
+        }),
+        gql::PullRequestEnrichmentRepositoryPullRequestTimelineItemsNodesOnReviewRequestedEventRequestedReviewer::Bot(bot) => Some(super::model::User {
+            login: bot.login.clone(),
+            kind: Some(String::from("Bot")),
+        }),
+        gql::PullRequestEnrichmentRepositoryPullRequestTimelineItemsNodesOnReviewRequestedEventRequestedReviewer::Team(_) => None,
     }
 }
 
-fn graphql_requested_reviewer_team(
-    reviewer: &GraphQlRequestedReviewer,
+fn review_requested_reviewer_team(
+    reviewer: &gql::PullRequestEnrichmentRepositoryPullRequestTimelineItemsNodesOnReviewRequestedEventRequestedReviewer,
 ) -> Option<super::model::Team> {
     match reviewer {
-        GraphQlRequestedReviewer::Team { slug } => Some(super::model::Team { slug: slug.clone() }),
-        GraphQlRequestedReviewer::User { .. } | GraphQlRequestedReviewer::Bot { .. } => None,
+        gql::PullRequestEnrichmentRepositoryPullRequestTimelineItemsNodesOnReviewRequestedEventRequestedReviewer::Team(team) => {
+            Some(super::model::Team { slug: team.slug.clone() })
+        }
+        gql::PullRequestEnrichmentRepositoryPullRequestTimelineItemsNodesOnReviewRequestedEventRequestedReviewer::User(_)
+        | gql::PullRequestEnrichmentRepositoryPullRequestTimelineItemsNodesOnReviewRequestedEventRequestedReviewer::Bot(_) => None,
     }
 }
 
-fn commit_signature_to_user(signature: &GraphQlCommitSignature) -> Option<super::model::User> {
+fn review_request_removed_reviewer_user(
+    reviewer: &gql::PullRequestEnrichmentRepositoryPullRequestTimelineItemsNodesOnReviewRequestRemovedEventRequestedReviewer,
+) -> Option<super::model::User> {
+    match reviewer {
+        gql::PullRequestEnrichmentRepositoryPullRequestTimelineItemsNodesOnReviewRequestRemovedEventRequestedReviewer::User(user) => Some(super::model::User {
+            login: user.login.clone(),
+            kind: None,
+        }),
+        gql::PullRequestEnrichmentRepositoryPullRequestTimelineItemsNodesOnReviewRequestRemovedEventRequestedReviewer::Bot(bot) => Some(super::model::User {
+            login: bot.login.clone(),
+            kind: Some(String::from("Bot")),
+        }),
+        gql::PullRequestEnrichmentRepositoryPullRequestTimelineItemsNodesOnReviewRequestRemovedEventRequestedReviewer::Team(_) => None,
+    }
+}
+
+fn review_request_removed_reviewer_team(
+    reviewer: &gql::PullRequestEnrichmentRepositoryPullRequestTimelineItemsNodesOnReviewRequestRemovedEventRequestedReviewer,
+) -> Option<super::model::Team> {
+    match reviewer {
+        gql::PullRequestEnrichmentRepositoryPullRequestTimelineItemsNodesOnReviewRequestRemovedEventRequestedReviewer::Team(team) => {
+            Some(super::model::Team { slug: team.slug.clone() })
+        }
+        gql::PullRequestEnrichmentRepositoryPullRequestTimelineItemsNodesOnReviewRequestRemovedEventRequestedReviewer::User(_)
+        | gql::PullRequestEnrichmentRepositoryPullRequestTimelineItemsNodesOnReviewRequestRemovedEventRequestedReviewer::Bot(_) => None,
+    }
+}
+
+trait CommitSignature {
+    fn name(&self) -> Option<&str>;
+    fn user_login(&self) -> Option<&str>;
+}
+
+impl CommitSignature for gql::PullRequestEnrichmentRepositoryPullRequestCommitsNodesCommitAuthor {
+    fn name(&self) -> Option<&str> {
+        self.name.as_deref()
+    }
+
+    fn user_login(&self) -> Option<&str> {
+        self.user.as_ref().map(|user| user.login.as_str())
+    }
+}
+
+impl CommitSignature
+    for gql::PullRequestEnrichmentRepositoryPullRequestCommitsNodesCommitCommitter
+{
+    fn name(&self) -> Option<&str> {
+        self.name.as_deref()
+    }
+
+    fn user_login(&self) -> Option<&str> {
+        self.user.as_ref().map(|user| user.login.as_str())
+    }
+}
+
+fn commit_signature_to_user(signature: &impl CommitSignature) -> Option<super::model::User> {
     let login = signature
-        .user
-        .as_ref()
-        .map(|user| user.login.clone())
-        .or_else(|| signature.name.clone())?;
+        .user_login()
+        .map(String::from)
+        .or_else(|| signature.name().map(String::from))?;
 
     Some(super::model::User {
         kind: login.ends_with("[bot]").then(|| String::from("Bot")),
@@ -1102,14 +931,14 @@ mod tests {
 
     #[test]
     fn converts_graphql_review_dismissal_to_timeline_event() {
-        let event = graphql_timeline_event(&GraphQlTimelineItem::ReviewDismissedEvent {
-            actor: Some(GraphQlActor {
-                kind: String::from("User"),
-                login: String::from("chaosvolt"),
-            }),
-            dismissal_message: Some(String::from("one more test soonmish")),
-            created_at: String::from("2026-06-09T06:46:03Z"),
-        });
+        let item = serde_json::from_value(serde_json::json!({
+            "__typename": "ReviewDismissedEvent",
+            "actor": { "__typename": "User", "login": "chaosvolt" },
+            "dismissalMessage": "one more test soonmish",
+            "createdAt": "2026-06-09T06:46:03Z",
+        }))
+        .expect("review dismissed event");
+        let event = graphql_timeline_event(&item);
 
         assert_eq!(event.event.as_deref(), Some("review_dismissed"));
         assert_eq!(
@@ -1126,36 +955,49 @@ mod tests {
     }
 
     #[test]
+    fn uses_graphql_review_submitted_time_for_activity_ordering() {
+        let item = serde_json::from_value(serde_json::json!({
+            "__typename": "PullRequestReview",
+            "state": "COMMENTED",
+            "author": { "__typename": "User", "login": "reviewer" },
+            "body": "latest review",
+            "comments": { "nodes": [] },
+            "createdAt": "2026-06-17T07:47:25Z",
+            "submittedAt": "2026-06-17T08:16:44Z",
+        }))
+        .expect("review event");
+        let event = graphql_timeline_event(&item);
+
+        assert_eq!(event.created_at.as_deref(), Some("2026-06-17T07:47:25Z"));
+        assert_eq!(event.submitted_at.as_deref(), Some("2026-06-17T08:16:44Z"));
+    }
+
+    #[test]
     fn converts_graphql_review_comments_to_review_body_fallback() {
-        let event = graphql_timeline_event(&GraphQlTimelineItem::PullRequestReview {
-            state: Some(String::from("COMMENTED")),
-            author: Some(GraphQlActor {
-                kind: String::from("User"),
-                login: String::from("reviewer"),
-            }),
-            body: Some(String::from("   ")),
-            comments: GraphQlReviewCommentConnection {
-                nodes: vec![
-                    GraphQlReviewComment {
-                        author: Some(GraphQlActor {
-                            kind: String::from("User"),
-                            login: String::from("reviewer"),
-                        }),
-                        body: Some(String::from("older inline comment")),
-                        created_at: String::from("2026-03-30T04:08:52Z"),
+        let item = serde_json::from_value(serde_json::json!({
+            "__typename": "PullRequestReview",
+            "state": "COMMENTED",
+            "author": { "__typename": "User", "login": "reviewer" },
+            "body": "   ",
+            "comments": {
+                "nodes": [
+                    {
+                        "author": { "__typename": "User", "login": "reviewer" },
+                        "body": "older inline comment",
+                        "createdAt": "2026-03-30T04:08:52Z"
                     },
-                    GraphQlReviewComment {
-                        author: Some(GraphQlActor {
-                            kind: String::from("User"),
-                            login: String::from("reviewer"),
-                        }),
-                        body: Some(String::from("newer inline comment")),
-                        created_at: String::from("2026-03-30T04:09:52Z"),
-                    },
-                ],
+                    {
+                        "author": { "__typename": "User", "login": "reviewer" },
+                        "body": "newer inline comment",
+                        "createdAt": "2026-03-30T04:09:52Z"
+                    }
+                ]
             },
-            created_at: String::from("2026-03-30T04:10:52Z"),
-        });
+            "createdAt": "2026-03-30T04:08:52Z",
+            "submittedAt": "2026-03-30T04:10:52Z",
+        }))
+        .expect("review event");
+        let event = graphql_timeline_event(&item);
 
         assert_eq!(event.event.as_deref(), Some("reviewed"));
         assert_eq!(
@@ -1166,18 +1008,66 @@ mod tests {
     }
 
     #[test]
+    fn includes_pull_request_reviews_outside_timeline_items() {
+        let pull_request: GraphQlPullRequest = serde_json::from_value(serde_json::json!({
+            "merged": false,
+            "body": "",
+            "mergedBy": null,
+            "timelineItems": { "nodes": [] },
+            "reviews": {
+                "nodes": [
+                    {
+                        "state": "COMMENTED",
+                        "author": { "__typename": "User", "login": "older" },
+                        "body": "older review",
+                        "comments": { "nodes": [] },
+                        "createdAt": "2026-06-17T08:01:24Z",
+                        "submittedAt": "2026-06-17T08:01:24Z"
+                    },
+                    {
+                        "state": "COMMENTED",
+                        "author": { "__typename": "User", "login": "newer" },
+                        "body": "",
+                        "comments": {
+                            "nodes": [{
+                                "author": { "__typename": "User", "login": "newer" },
+                                "body": "latest inline review comment",
+                                "createdAt": "2026-06-17T08:16:44Z"
+                            }]
+                        },
+                        "createdAt": "2026-06-17T08:16:44Z",
+                        "submittedAt": "2026-06-17T08:16:44Z"
+                    }
+                ]
+            },
+            "commits": { "nodes": [] }
+        }))
+        .expect("pull request");
+
+        let timeline = graphql_timeline_to_rest(&pull_request);
+        let activity =
+            super::super::model::TimelineActivity::from_timeline(&timeline).expect("activity");
+
+        assert_eq!(activity.actor, "newer");
+        assert_eq!(
+            activity.detail.as_deref(),
+            Some("latest inline review comment")
+        );
+    }
+
+    #[test]
     fn converts_graphql_bot_commit_to_timeline_event() {
-        let event = graphql_commit_event(&GraphQlCommit {
-            message_headline: String::from("style(autofix.ci): automated formatting"),
-            authored_date: String::from("2026-03-30T04:08:52Z"),
-            author: Some(GraphQlCommitSignature {
-                name: Some(String::from("autofix-ci[bot]")),
-                user: Some(GraphQlCommitUser {
-                    login: String::from("autofix-ci[bot]"),
-                }),
-            }),
-            committer: None,
-        });
+        let commit = serde_json::from_value(serde_json::json!({
+            "messageHeadline": "style(autofix.ci): automated formatting",
+            "authoredDate": "2026-03-30T04:08:52Z",
+            "author": {
+                "name": "autofix-ci[bot]",
+                "user": { "login": "autofix-ci[bot]" }
+            },
+            "committer": null,
+        }))
+        .expect("commit");
+        let event = graphql_commit_event(&commit);
 
         assert_eq!(event.event.as_deref(), Some("committed"));
         assert_eq!(
