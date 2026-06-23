@@ -183,28 +183,14 @@ impl State {
     }
 
     fn rebuild_seen_index(&mut self) {
-        let mut seen_index = HashSet::with_capacity(self.seen.len());
-        let mut deduped = VecDeque::with_capacity(self.seen.len());
-        for key in self.seen.drain(..) {
-            if seen_index.insert(key.clone()) {
-                deduped.push_back(key);
-            }
-        }
-        self.seen = deduped;
-        self.seen_index = seen_index;
+        rebuild_string_index(&mut self.seen, &mut self.seen_index);
     }
 
     fn rebuild_auto_watched_repository_index(&mut self) {
-        let mut auto_watched_repository_index =
-            HashSet::with_capacity(self.auto_watched_repositories.len());
-        let mut deduped = VecDeque::with_capacity(self.auto_watched_repositories.len());
-        for full_name in self.auto_watched_repositories.drain(..) {
-            if auto_watched_repository_index.insert(full_name.clone()) {
-                deduped.push_back(full_name);
-            }
-        }
-        self.auto_watched_repositories = deduped;
-        self.auto_watched_repository_index = auto_watched_repository_index;
+        rebuild_string_index(
+            &mut self.auto_watched_repositories,
+            &mut self.auto_watched_repository_index,
+        );
     }
 
     fn rebuild_notification_index(&mut self) {
@@ -229,6 +215,11 @@ impl State {
         self.notifications = deduped;
         self.notification_index = notification_index;
     }
+}
+
+fn rebuild_string_index(queue: &mut VecDeque<String>, index: &mut HashSet<String>) {
+    *index = HashSet::with_capacity(queue.len());
+    queue.retain(|value| index.insert(value.clone()));
 }
 
 #[cfg(test)]

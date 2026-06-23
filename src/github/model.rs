@@ -44,14 +44,22 @@ pub struct Subject {
     pub url: Option<String>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
 pub struct PullRequestDetails {
     #[serde(default)]
     pub merged: bool,
     pub merged_by: Option<User>,
+    #[serde(default)]
+    pub body: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
+pub struct SubjectDetails {
+    #[serde(default)]
+    pub body: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
 pub struct TimelineEvent {
     pub event: Option<String>,
     pub actor: Option<User>,
