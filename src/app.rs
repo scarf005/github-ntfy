@@ -100,11 +100,7 @@ impl App {
         }
 
         let mut sent_count = 0usize;
-        for thread in poll_result
-            .notifications
-            .iter()
-            .filter(|thread| thread.unread)
-        {
+        for thread in &poll_result.notifications {
             let rendered = self.process_thread(&mut state, thread).await?;
             sent_count += usize::from(rendered);
         }
@@ -206,14 +202,18 @@ impl App {
     }
 
     async fn process_thread(&self, state: &mut State, thread: &Thread) -> Result<bool> {
+        let sequence_id = notification_sequence_id(thread);
+        let has_existing_notification = state.has_notification(&sequence_id);
+        if !should_process_polled_thread(thread, has_existing_notification) {
+            return Ok(false);
+        }
+
         let dedupe_key = format!("{}|{}", thread.id, thread.updated_at);
         if state.has_seen(&dedupe_key) {
             return Ok(false);
         }
 
         let (pull_request, timeline) = self.enrich_thread(thread).await;
-        let sequence_id = notification_sequence_id(thread);
-        let has_existing_notification = state.has_notification(&sequence_id);
         let mut intent = NotificationIntent::classify(thread, timeline, has_existing_notification);
         let mut facts = build_notification_facts(thread, pull_request.as_ref(), intent.timeline());
 
@@ -376,5 +376,53 @@ impl App {
         };
 
         (pull_request, timeline)
+    }
+}
+
+fn should_process_polled_thread(thread: &Thread, has_existing_notification: bool) -> bool {
+    thread.unread || has_existing_notification
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::github::{Repository, Subject};
+
+    fn thread(unread: bool) -> Thread {
+        Thread {
+            id: String::from("24409556670"),
+            unread,
+            updated_at: String::from("2026-06-29T11:52:00Z"),
+            reason: Some(String::from("mention")),
+            repository: Repository {
+                full_name: String::from("cataclysmbn/Cataclysm-BN"),
+                html_url: String::from("https://github.com/cataclysmbn/Cataclysm-BN"),
+                owner: None,
+            },
+            subject: Subject {
+                title: Some(String::from(
+                    "chore(mods): transfer of maintainership for lethal zombies mod",
+                )),
+                kind: Some(String::from("PullRequest")),
+                url: Some(String::from(
+                    "https://api.github.com/repos/cataclysmbn/Cataclysm-BN/pulls/9719",
+                )),
+            },
+        }
+    }
+
+    #[test]
+    fn processes_unread_threads_without_existing_notification() {
+        assert!(should_process_polled_thread(&thread(true), false));
+    }
+
+    #[test]
+    fn processes_read_threads_when_they_update_existing_notifications() {
+        assert!(should_process_polled_thread(&thread(false), true));
+    }
+
+    #[test]
+    fn skips_read_threads_that_were_never_sent() {
+        assert!(!should_process_polled_thread(&thread(false), false));
     }
 }

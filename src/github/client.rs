@@ -167,7 +167,7 @@ impl GitHubClient {
             .get(self.endpoint("/notifications")?)
             .headers(self.headers()?);
         request = request.query(&[
-            ("all", "false"),
+            ("all", "true"),
             (
                 "participating",
                 if config.participating {
