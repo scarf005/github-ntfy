@@ -5,8 +5,6 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
-const MAX_MERGED_MESSAGES: usize = 4;
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NotificationMerge {
     pub blocks: Vec<String>,
@@ -118,20 +116,19 @@ impl State {
             };
         };
 
-        if existing.iter().any(|block| block == incoming_message) {
+        if existing
+            .first()
+            .is_some_and(|block| block == incoming_message)
+        {
             return NotificationMerge {
-                blocks: existing.clone(),
+                blocks: vec![String::from(incoming_message)],
                 had_existing: true,
                 inserted_new_block: false,
             };
         }
 
-        let mut blocks = Vec::with_capacity((existing.len() + 1).min(MAX_MERGED_MESSAGES));
-        blocks.push(String::from(incoming_message));
-        blocks.extend(existing.iter().take(MAX_MERGED_MESSAGES - 1).cloned());
-
         NotificationMerge {
-            blocks,
+            blocks: vec![String::from(incoming_message)],
             had_existing: true,
             inserted_new_block: true,
         }
@@ -205,11 +202,7 @@ impl State {
                 continue;
             }
 
-            let messages = entry
-                .messages
-                .into_iter()
-                .take(MAX_MERGED_MESSAGES)
-                .collect::<Vec<_>>();
+            let messages = entry.messages.into_iter().take(1).collect::<Vec<_>>();
             notification_index.insert(entry.sequence_id.clone(), messages.clone());
             deduped.push_back(NotificationEntry {
                 sequence_id: entry.sequence_id,

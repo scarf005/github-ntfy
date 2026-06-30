@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
@@ -162,37 +163,40 @@ impl GitHubClient {
         config: &GitHubConfig,
         _last_modified: Option<&str>,
     ) -> Result<PollResult> {
-        let mut request = self
+        let unread = self.fetch_notifications(config, false).await?;
+        let recent = match self.fetch_notifications(config, true).await {
+            Ok(recent) => Some(recent),
+            Err(error) => {
+                tracing::warn!(%error, "failed to fetch read notifications; processing unread notifications only");
+                None
+            }
+        };
+
+        Ok(poll_result_from_batches(unread, recent))
+    }
+
+    async fn fetch_notifications(
+        &self,
+        config: &GitHubConfig,
+        all: bool,
+    ) -> Result<(Vec<Thread>, HeaderMap)> {
+        let request = self
             .client
             .get(self.endpoint("/notifications")?)
-            .headers(self.headers()?);
-        request = request.query(&[
-            ("all", "true"),
-            (
-                "participating",
-                if config.participating {
-                    "true"
-                } else {
-                    "false"
-                },
-            ),
-            ("page", "1"),
-        ]);
-        let request = request.query(&[
-            ("per_page", config.per_page.to_string()),
-            ("page", String::from("1")),
-        ]);
+            .headers(self.headers()?)
+            .query(&[
+                ("all", all.to_string()),
+                ("participating", config.participating.to_string()),
+                ("per_page", config.per_page.clamp(1, 100).to_string()),
+                ("page", String::from("1")),
+            ]);
         let response = request
             .send()
             .await
             .context("failed to poll GitHub notifications")?;
 
         if response.status() == StatusCode::NOT_MODIFIED {
-            return Ok(PollResult {
-                notifications: Vec::new(),
-                last_modified: None,
-                poll_interval_secs: parse_poll_interval(response.headers()),
-            });
+            return Ok((Vec::new(), response.headers().clone()));
         }
 
         let response = response
@@ -204,14 +208,7 @@ impl GitHubClient {
             .await
             .context("failed to decode GitHub notifications")?;
 
-        Ok(PollResult {
-            notifications,
-            last_modified: headers
-                .get(LAST_MODIFIED)
-                .and_then(|value| value.to_str().ok())
-                .map(String::from),
-            poll_interval_secs: parse_poll_interval(&headers),
-        })
+        Ok((notifications, headers))
     }
 
     pub async fn pull_request_details(&self, subject_url: &str) -> Result<PullRequestDetails> {
@@ -427,6 +424,35 @@ fn parse_poll_interval(headers: &HeaderMap) -> Option<u64> {
         .and_then(|value| value.parse::<u64>().ok())
 }
 
+fn poll_result_from_batches(
+    unread: (Vec<Thread>, HeaderMap),
+    recent: Option<(Vec<Thread>, HeaderMap)>,
+) -> PollResult {
+    let (unread_notifications, unread_headers) = unread;
+    let (recent_notifications, headers) =
+        recent.unwrap_or_else(|| (Vec::new(), unread_headers.clone()));
+
+    PollResult {
+        notifications: merge_notification_batches(recent_notifications, unread_notifications),
+        last_modified: headers
+            .get(LAST_MODIFIED)
+            .and_then(|value| value.to_str().ok())
+            .map(String::from),
+        poll_interval_secs: parse_poll_interval(&headers),
+    }
+}
+
+fn merge_notification_batches(recent: Vec<Thread>, unread: Vec<Thread>) -> Vec<Thread> {
+    let mut seen = HashSet::new();
+    let mut notifications = recent
+        .into_iter()
+        .chain(unread)
+        .filter(|thread| seen.insert(thread.id.clone()))
+        .collect::<Vec<_>>();
+    notifications.sort_by(|left, right| right.updated_at.cmp(&left.updated_at));
+    notifications
+}
+
 fn parse_pull_request_subject(subject_url: &str) -> Result<PullRequestSubject> {
     let url = Url::parse(subject_url)
         .with_context(|| format!("failed to parse pull request subject URL: {subject_url}"))?;
@@ -482,6 +508,7 @@ fn graphql_timeline_event(item: &GraphQlTimelineItem) -> TimelineEvent {
         GraphQlTimelineItem::PullRequestReview(review) => graphql_review_event(review),
         GraphQlTimelineItem::IssueComment(comment) => TimelineEvent {
             event: Some(String::from("commented")),
+            url: Some(comment.url.clone()),
             actor: comment.author.as_ref().map(graphql_actor_to_user),
             body: Some(comment.body.clone()),
             created_at: Some(comment.created_at.clone()),
@@ -588,15 +615,13 @@ fn graphql_timeline_event(item: &GraphQlTimelineItem) -> TimelineEvent {
 
 fn graphql_review_event(review: &GraphQlReview) -> TimelineEvent {
     let latest_comment = latest_review_comment(&review.comments);
-    let actor = if let Some(author) = review.author.as_ref() {
-        Some(graphql_actor_to_user(author))
-    } else {
-        latest_comment
-            .and_then(|comment| comment.author.as_ref())
-            .map(graphql_actor_to_user)
-    };
+    let actor = latest_comment
+        .and_then(|comment| comment.author.as_ref())
+        .map(graphql_actor_to_user)
+        .or_else(|| review.author.as_ref().map(graphql_actor_to_user));
     TimelineEvent {
         event: Some(String::from("reviewed")),
+        url: latest_comment.map(|comment| comment.url.clone()),
         actor,
         body: review_detail(&review.body, latest_comment),
         state: Some(review_state(&review.state)),
@@ -617,10 +642,10 @@ fn review_state(state: &gql::PullRequestReviewState) -> String {
     }
 }
 
-fn review_detail(body: &str, fallback_comment: Option<&GraphQlReviewComment>) -> Option<String> {
-    (!body.trim().is_empty())
-        .then(|| String::from(body))
-        .or_else(|| fallback_comment.map(|comment| comment.body.clone()))
+fn review_detail(body: &str, latest_comment: Option<&GraphQlReviewComment>) -> Option<String> {
+    latest_comment
+        .map(|comment| comment.body.clone())
+        .or_else(|| (!body.trim().is_empty()).then(|| String::from(body)))
 }
 
 fn latest_review_comment(
@@ -917,6 +942,60 @@ fn commit_signature_to_user(signature: &impl CommitSignature) -> Option<super::m
 mod tests {
     use super::*;
 
+    fn thread(id: &str, unread: bool, updated_at: &str) -> Thread {
+        serde_json::from_value(serde_json::json!({
+            "id": id,
+            "unread": unread,
+            "updated_at": updated_at,
+            "reason": "subscribed",
+            "repository": {
+                "full_name": "octo/repo",
+                "html_url": "https://github.com/octo/repo",
+                "owner": null
+            },
+            "subject": {
+                "title": "Issue title",
+                "type": "Issue",
+                "url": "https://api.github.com/repos/octo/repo/issues/1",
+                "latest_comment_url": "https://api.github.com/repos/octo/repo/issues/1"
+            }
+        }))
+        .expect("thread")
+    }
+
+    #[test]
+    fn preserves_unread_notifications_when_recent_fetch_is_missing() {
+        let result = poll_result_from_batches(
+            (
+                vec![thread("unread-1", true, "2026-06-30T04:09:00Z")],
+                HeaderMap::new(),
+            ),
+            None,
+        );
+
+        assert_eq!(result.notifications.len(), 1);
+        assert_eq!(result.notifications[0].id, "unread-1");
+    }
+
+    #[test]
+    fn preserves_unread_notifications_when_recent_read_page_is_full() {
+        let merged = merge_notification_batches(
+            vec![thread("read-1", false, "2026-06-30T04:10:00Z")],
+            vec![
+                thread("unread-1", true, "2026-06-30T04:09:00Z"),
+                thread("read-1", false, "2026-06-30T04:10:00Z"),
+            ],
+        );
+
+        assert_eq!(
+            merged
+                .iter()
+                .map(|thread| thread.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["read-1", "unread-1"]
+        );
+    }
+
     #[test]
     fn parses_pull_request_subject_url() {
         let subject = parse_pull_request_subject(
@@ -927,6 +1006,25 @@ mod tests {
         assert_eq!(subject.owner, "cataclysmbn");
         assert_eq!(subject.repo, "Cataclysm-BN");
         assert_eq!(subject.number, 8404);
+    }
+
+    #[test]
+    fn converts_graphql_issue_comment_url_to_timeline_event() {
+        let item = serde_json::from_value(serde_json::json!({
+            "__typename": "IssueComment",
+            "author": { "__typename": "User", "login": "chaosvolt" },
+            "body": "target comment",
+            "url": "https://github.com/octo/repo/pull/1#issuecomment-2",
+            "createdAt": "2026-06-29T10:46:09Z",
+        }))
+        .expect("issue comment event");
+        let event = graphql_timeline_event(&item);
+
+        assert_eq!(event.event.as_deref(), Some("commented"));
+        assert_eq!(
+            event.url.as_deref(),
+            Some("https://github.com/octo/repo/pull/1#issuecomment-2")
+        );
     }
 
     #[test]
@@ -984,11 +1082,13 @@ mod tests {
                     {
                         "author": { "__typename": "User", "login": "reviewer" },
                         "body": "older inline comment",
+                        "url": "https://github.com/octo/repo/pull/1#discussion_r1",
                         "createdAt": "2026-03-30T04:08:52Z"
                     },
                     {
                         "author": { "__typename": "User", "login": "reviewer" },
                         "body": "newer inline comment",
+                        "url": "https://github.com/octo/repo/pull/1#discussion_r2",
                         "createdAt": "2026-03-30T04:09:52Z"
                     }
                 ]
@@ -1005,6 +1105,38 @@ mod tests {
             Some("reviewer")
         );
         assert_eq!(event.body.as_deref(), Some("newer inline comment"));
+    }
+
+    #[test]
+    fn uses_latest_inline_review_comment_over_review_body() {
+        let item = serde_json::from_value(serde_json::json!({
+            "__typename": "PullRequestReview",
+            "state": "COMMENTED",
+            "author": { "__typename": "User", "login": "reviewer" },
+            "body": "overall review body",
+            "comments": {
+                "nodes": [{
+                    "author": { "__typename": "User", "login": "inline-author" },
+                    "body": "anchored inline comment",
+                    "url": "https://github.com/octo/repo/pull/1#discussion_r4",
+                    "createdAt": "2026-03-30T04:09:52Z"
+                }]
+            },
+            "createdAt": "2026-03-30T04:08:52Z",
+            "submittedAt": "2026-03-30T04:10:52Z",
+        }))
+        .expect("review event");
+        let event = graphql_timeline_event(&item);
+
+        assert_eq!(event.body.as_deref(), Some("anchored inline comment"));
+        assert_eq!(
+            event.url.as_deref(),
+            Some("https://github.com/octo/repo/pull/1#discussion_r4")
+        );
+        assert_eq!(
+            event.actor.as_ref().map(|user| user.login.as_str()),
+            Some("inline-author")
+        );
     }
 
     #[test]
@@ -1032,6 +1164,7 @@ mod tests {
                             "nodes": [{
                                 "author": { "__typename": "User", "login": "newer" },
                                 "body": "latest inline review comment",
+                                "url": "https://github.com/octo/repo/pull/1#discussion_r3",
                                 "createdAt": "2026-06-17T08:16:44Z"
                             }]
                         },

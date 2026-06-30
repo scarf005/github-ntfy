@@ -182,6 +182,11 @@ fn enrich_issue(
             format!("@{} mentioned you in {}", activity.actor, base_title)
         }
         "commented" => format!("@{} commented on {}", activity.actor, base_title),
+        "closed_via_pull_request" => format!(
+            "@{} closed via {}",
+            activity.actor,
+            activity.detail.as_deref().unwrap_or("pull request")
+        ),
         "closed" => format!("@{} closed {}", activity.actor, base_title),
         "reopened" => format!("@{} reopened {}", activity.actor, base_title),
         "assigned" => format!("@{} assigned {}", activity.actor, base_title),
@@ -196,6 +201,8 @@ fn enrich_issue(
         format_comment_message(&activity.actor, activity.detail.as_deref(), &summary)
     } else if activity.kind == "closed" {
         format_closed_message(&activity.actor, activity.detail.as_deref(), &summary)
+    } else if activity.kind == "closed_via_pull_request" {
+        summary
     } else {
         prepend_summary(&summary, activity.detail.as_deref())
     };
@@ -814,7 +821,9 @@ mod tests {
                     issue: Some(TimelineSourceIssue {
                         number: 9716,
                         title: String::from("fix: prevent freeze on EMP explosion"),
-                        html_url: String::from("https://github.com/cataclysmbn/Cataclysm-BN/pull/9716"),
+                        html_url: String::from(
+                            "https://github.com/cataclysmbn/Cataclysm-BN/pull/9716",
+                        ),
                         pull_request: Some(TimelineSourcePullRequest {
                             merged_at: Some(String::from("2026-06-30T04:13:45Z")),
                         }),

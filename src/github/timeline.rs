@@ -142,15 +142,23 @@ impl TimelineActivity {
                 detail: last.detail_text(),
                 commit_count: None,
             }),
-            "closed" => Some(Self {
-                kind: String::from("closed"),
-                detail: last
-                    .detail_text()
-                    .or_else(|| adjacent_closing_comment_detail(&events, last, &actor)),
-                actor,
-                actor_is_bot,
-                commit_count: None,
-            }),
+            "closed" => {
+                let closing_pull_request = closing_pull_request_detail(timeline, last);
+                Some(Self {
+                    kind: if closing_pull_request.is_some() {
+                        String::from("closed_via_pull_request")
+                    } else {
+                        String::from("closed")
+                    },
+                    detail: closing_pull_request.or_else(|| {
+                        last.detail_text()
+                            .or_else(|| adjacent_closing_comment_detail(&events, last, &actor))
+                    }),
+                    actor,
+                    actor_is_bot,
+                    commit_count: None,
+                })
+            }
             "assigned" => Some(Self {
                 kind: String::from("assigned"),
                 actor,
@@ -252,6 +260,35 @@ impl TimelineActivity {
     }
 }
 
+fn closing_pull_request_detail(
+    timeline: &[TimelineEvent],
+    closed: &TimelineEvent,
+) -> Option<String> {
+    let closed_time = closed.event_time();
+    timeline
+        .iter()
+        .filter(|event| event.event.as_deref() == Some("cross-referenced"))
+        .filter(|event| event.event_time() <= closed_time)
+        .filter_map(|event| Some((event.event_time(), event.source.as_ref()?.issue.as_ref()?)))
+        .filter(|(cross_reference_time, issue)| {
+            issue
+                .pull_request
+                .as_ref()
+                .and_then(|pull| pull.merged_at.as_deref())
+                .is_some_and(|merged_at| {
+                    merged_at >= *cross_reference_time
+                        && merged_at <= closed_time
+                        && same_utc_minute(merged_at, closed_time)
+                })
+        })
+        .max_by_key(|(time, _)| *time)
+        .map(|(_, issue)| format!("#{} ({})", issue.number, issue.title))
+}
+
+fn same_utc_minute(left: &str, right: &str) -> bool {
+    left.get(..16) == right.get(..16)
+}
+
 fn adjacent_closing_comment_detail(
     events: &[&TimelineEvent],
     closed: &TimelineEvent,
@@ -291,7 +328,9 @@ pub fn timeline_url(subject_url: &str) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::github::{Team, TimelineSource, TimelineSourceIssue, TimelineSourcePullRequest, User};
+    use crate::github::{
+        Team, TimelineSource, TimelineSourceIssue, TimelineSourcePullRequest, User,
+    };
 
     fn user(login: &str, kind: Option<&str>) -> User {
         User {
@@ -382,7 +421,9 @@ mod tests {
                     issue: Some(TimelineSourceIssue {
                         number: 9716,
                         title: String::from("fix: prevent freeze on EMP explosion"),
-                        html_url: String::from("https://github.com/cataclysmbn/Cataclysm-BN/pull/9716"),
+                        html_url: String::from(
+                            "https://github.com/cataclysmbn/Cataclysm-BN/pull/9716",
+                        ),
                         pull_request: Some(TimelineSourcePullRequest {
                             merged_at: Some(String::from("2026-06-30T04:13:45Z")),
                         }),
@@ -402,7 +443,44 @@ mod tests {
 
         assert_eq!(activity.kind, "closed_via_pull_request");
         assert_eq!(activity.actor, "chaosvolt");
-        assert_eq!(activity.detail.as_deref(), Some("#9716 (fix: prevent freeze on EMP explosion)"));
+        assert_eq!(
+            activity.detail.as_deref(),
+            Some("#9716 (fix: prevent freeze on EMP explosion)")
+        );
+    }
+
+    #[test]
+    fn keeps_manual_close_after_old_cross_reference_as_plain_close() {
+        let timeline = vec![
+            TimelineEvent {
+                event: Some(String::from("cross-referenced")),
+                actor: Some(user("Worom", None)),
+                created_at: Some(String::from("2026-06-01T00:55:13Z")),
+                source: Some(TimelineSource {
+                    issue: Some(TimelineSourceIssue {
+                        number: 9716,
+                        title: String::from("fix: prevent freeze on EMP explosion"),
+                        html_url: String::from(
+                            "https://github.com/cataclysmbn/Cataclysm-BN/pull/9716",
+                        ),
+                        pull_request: Some(TimelineSourcePullRequest {
+                            merged_at: Some(String::from("2026-06-01T04:13:45Z")),
+                        }),
+                    }),
+                }),
+                ..TimelineEvent::default()
+            },
+            TimelineEvent {
+                event: Some(String::from("closed")),
+                actor: Some(user("chaosvolt", None)),
+                created_at: Some(String::from("2026-06-30T04:13:46Z")),
+                ..TimelineEvent::default()
+            },
+        ];
+
+        let activity = TimelineActivity::from_timeline(&timeline).expect("activity");
+
+        assert_eq!(activity.kind, "closed");
     }
 
     #[test]

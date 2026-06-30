@@ -19,14 +19,16 @@ impl NotificationIntent {
         timeline: Option<Vec<TimelineEvent>>,
         has_existing_notification: bool,
     ) -> Self {
-        let timeline = timeline.unwrap_or_default();
+        let timeline = anchor_timeline(thread, timeline.unwrap_or_default());
         let has_activity = TimelineActivity::from_timeline(&timeline).is_some();
-        let kind =
-            if is_issue_or_pull_request(thread) && !has_existing_notification && !has_activity {
-                NotificationIntentKind::InitialSubject
-            } else {
-                NotificationIntentKind::Activity
-            };
+        let kind = if is_issue_or_pull_request(thread)
+            && !has_existing_notification
+            && (!has_activity || latest_comment_points_to_subject(thread))
+        {
+            NotificationIntentKind::InitialSubject
+        } else {
+            NotificationIntentKind::Activity
+        };
 
         Self { kind, timeline }
     }
@@ -69,6 +71,86 @@ fn is_issue_or_pull_request(thread: &Thread) -> bool {
     )
 }
 
+fn anchor_timeline(thread: &Thread, timeline: Vec<TimelineEvent>) -> Vec<TimelineEvent> {
+    let Some(latest_comment_url) = thread.subject.latest_comment_url.as_deref() else {
+        return timeline;
+    };
+
+    if latest_comment_points_to_subject(thread) || !reason_can_anchor_latest_comment(thread) {
+        return timeline;
+    }
+
+    timeline
+        .iter()
+        .find(|event| {
+            event
+                .url
+                .as_deref()
+                .is_some_and(|url| latest_comment_url_matches(thread, latest_comment_url, url))
+                && event_time(event) == thread.updated_at
+        })
+        .cloned()
+        .map(|event| vec![event])
+        .unwrap_or(timeline)
+}
+
+fn reason_can_anchor_latest_comment(thread: &Thread) -> bool {
+    matches!(
+        thread.reason.as_deref(),
+        Some("comment" | "mention" | "team_mention")
+    )
+}
+
+fn event_time(event: &TimelineEvent) -> &str {
+    event
+        .submitted_at
+        .as_deref()
+        .or(event.updated_at.as_deref())
+        .or(event.created_at.as_deref())
+        .unwrap_or_default()
+}
+
+fn latest_comment_points_to_subject(thread: &Thread) -> bool {
+    thread
+        .subject
+        .latest_comment_url
+        .as_deref()
+        .is_some_and(|latest| {
+            let Some(subject_url) = thread.subject.url.as_deref() else {
+                return false;
+            };
+
+            latest == subject_url
+                || (subject_url.contains("/pulls/")
+                    && latest == subject_url.replace("/pulls/", "/issues/"))
+        })
+}
+
+fn latest_comment_url_matches(thread: &Thread, latest_comment_url: &str, event_url: &str) -> bool {
+    event_url == latest_comment_url
+        || latest_comment_html_alias(thread, latest_comment_url).as_deref() == Some(event_url)
+}
+
+fn latest_comment_html_alias(thread: &Thread, latest_comment_url: &str) -> Option<String> {
+    let id = latest_comment_url.rsplit('/').next()?;
+    let subject_url = thread.subject.url.as_deref()?;
+    let mut subject_url =
+        subject_url.replace("https://api.github.com/repos/", "https://github.com/");
+    if thread.subject.kind.as_deref() == Some("PullRequest") {
+        subject_url = subject_url
+            .replace("/pulls/", "/pull/")
+            .replace("/issues/", "/pull/");
+    }
+
+    if latest_comment_url.contains("/issues/comments/") {
+        return Some(format!("{subject_url}#issuecomment-{id}"));
+    }
+
+    latest_comment_url
+        .contains("/pulls/comments/")
+        .then(|| format!("{subject_url}#discussion_r{id}"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -88,14 +170,19 @@ mod tests {
             subject: Subject {
                 title: Some(String::from("feat: Add Lang files")),
                 kind: Some(String::from(kind)),
-                url: Some(String::from(
-                    "https://api.github.com/repos/scarf005/Overhaul/issues/1",
-                )),
-                latest_comment_url: Some(String::from(
-                    "https://api.github.com/repos/scarf005/Overhaul/issues/1",
-                )),
+                url: Some(subject_url(kind)),
+                latest_comment_url: Some(subject_url(kind)),
             },
         }
+    }
+
+    fn subject_url(kind: &str) -> String {
+        let surface = if kind == "PullRequest" {
+            "pulls"
+        } else {
+            "issues"
+        };
+        format!("https://api.github.com/repos/scarf005/Overhaul/{surface}/1")
     }
 
     fn commit_event() -> TimelineEvent {
@@ -107,6 +194,20 @@ mod tests {
             }),
             message: Some(String::from("Update modinfo.json lethal_zeds")),
             created_at: Some(String::from("2026-06-29T10:46:09Z")),
+            ..TimelineEvent::default()
+        }
+    }
+
+    fn comment_event(url: &str, body: &str, created_at: &str) -> TimelineEvent {
+        TimelineEvent {
+            event: Some(String::from("commented")),
+            url: Some(String::from(url)),
+            actor: Some(User {
+                login: String::from("chaosvolt"),
+                kind: None,
+            }),
+            body: Some(String::from(body)),
+            created_at: Some(String::from(created_at)),
             ..TimelineEvent::default()
         }
     }
@@ -136,10 +237,119 @@ mod tests {
 
     #[test]
     fn classifies_first_subject_with_only_subject_anchor_as_initial_subject() {
-        let intent = NotificationIntent::classify(&thread("PullRequest"), Some(vec![commit_event()]), false);
+        let intent =
+            NotificationIntent::classify(&thread("PullRequest"), Some(vec![commit_event()]), false);
 
         assert_eq!(intent.kind(), NotificationIntentKind::InitialSubject);
         assert!(intent.timeline().is_none());
+    }
+
+    #[test]
+    fn keeps_first_subject_with_unknown_anchor_as_activity() {
+        let mut thread = thread("PullRequest");
+        thread.subject.latest_comment_url = None;
+        let intent = NotificationIntent::classify(&thread, Some(vec![commit_event()]), false);
+
+        assert_eq!(intent.kind(), NotificationIntentKind::Activity);
+        assert!(intent.timeline().is_some());
+    }
+
+    #[test]
+    fn keeps_latest_comment_anchor_as_activity_source() {
+        let mut thread = thread("PullRequest");
+        thread.reason = Some(String::from("comment"));
+        thread.updated_at = String::from("2026-06-29T10:46:09Z");
+        thread.subject.latest_comment_url = Some(String::from(
+            "https://api.github.com/repos/scarf005/Overhaul/issues/comments/2",
+        ));
+        let intent = NotificationIntent::classify(
+            &thread,
+            Some(vec![
+                comment_event(
+                    "https://github.com/scarf005/Overhaul/pull/1#issuecomment-2",
+                    "target comment",
+                    "2026-06-29T10:46:09Z",
+                ),
+                comment_event(
+                    "https://api.github.com/repos/scarf005/Overhaul/issues/comments/1",
+                    "newer unrelated comment",
+                    "2026-06-29T10:47:09Z",
+                ),
+            ]),
+            true,
+        );
+
+        let timeline = intent.timeline().expect("anchored activity");
+        assert_eq!(timeline.len(), 1);
+        assert_eq!(timeline[0].body.as_deref(), Some("target comment"));
+    }
+
+    #[test]
+    fn anchors_pull_request_comment_when_subject_uses_issue_url() {
+        let mut thread = thread("PullRequest");
+        thread.reason = Some(String::from("comment"));
+        thread.updated_at = String::from("2026-06-29T10:46:09Z");
+        thread.subject.url = Some(String::from(
+            "https://api.github.com/repos/scarf005/Overhaul/issues/1",
+        ));
+        thread.subject.latest_comment_url = Some(String::from(
+            "https://api.github.com/repos/scarf005/Overhaul/issues/comments/2",
+        ));
+        let intent = NotificationIntent::classify(
+            &thread,
+            Some(vec![
+                comment_event(
+                    "https://github.com/scarf005/Overhaul/pull/1#issuecomment-2",
+                    "target comment",
+                    "2026-06-29T10:46:09Z",
+                ),
+                comment_event(
+                    "https://github.com/scarf005/Overhaul/pull/1#issuecomment-1",
+                    "newer unrelated comment",
+                    "2026-06-29T10:47:09Z",
+                ),
+            ]),
+            true,
+        );
+
+        let timeline = intent.timeline().expect("anchored activity");
+        assert_eq!(timeline.len(), 1);
+        assert_eq!(timeline[0].body.as_deref(), Some("target comment"));
+    }
+
+    #[test]
+    fn ignores_stale_comment_anchor_for_state_change() {
+        let mut thread = thread("Issue");
+        thread.reason = Some(String::from("state_change"));
+        thread.updated_at = String::from("2026-06-29T10:47:09Z");
+        thread.subject.latest_comment_url = Some(String::from(
+            "https://api.github.com/repos/scarf005/Overhaul/issues/comments/2",
+        ));
+        let intent = NotificationIntent::classify(
+            &thread,
+            Some(vec![
+                comment_event(
+                    "https://api.github.com/repos/scarf005/Overhaul/issues/comments/2",
+                    "stale comment",
+                    "2026-06-29T10:46:09Z",
+                ),
+                TimelineEvent {
+                    event: Some(String::from("closed")),
+                    actor: Some(User {
+                        login: String::from("chaosvolt"),
+                        kind: None,
+                    }),
+                    created_at: Some(String::from("2026-06-29T10:47:09Z")),
+                    ..TimelineEvent::default()
+                },
+            ]),
+            true,
+        );
+
+        let timeline = intent.timeline().expect("state change activity");
+        assert_eq!(timeline.len(), 2);
+        let activity = TimelineActivity::from_timeline(timeline).expect("activity");
+        assert_eq!(activity.kind, "closed");
     }
 
     #[test]
@@ -152,17 +362,17 @@ mod tests {
 
     #[test]
     fn falls_back_to_initial_subject_for_filtered_first_activity() {
-        let intent = NotificationIntent::classify(
-            &thread("PullRequest"),
-            Some(vec![labeled_event()]),
-            false,
-        );
+        let mut thread = thread("PullRequest");
+        thread.subject.latest_comment_url = Some(String::from(
+            "https://api.github.com/repos/scarf005/Overhaul/issues/comments/1",
+        ));
+        let intent = NotificationIntent::classify(&thread, Some(vec![labeled_event()]), false);
         let rule = BlockRule {
             activity: Some(String::from("labeled")),
             ..BlockRule::default()
         };
 
         assert!(TimelineActivity::from_timeline(intent.timeline().unwrap()).is_some());
-        assert!(intent.should_fallback_to_initial_subject(&rule, &thread("PullRequest"), false));
+        assert!(intent.should_fallback_to_initial_subject(&rule, &thread, false));
     }
 }

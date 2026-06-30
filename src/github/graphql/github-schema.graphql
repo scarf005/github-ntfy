@@ -114,12 +114,14 @@ type PullRequestReviewCommentConnection {
 type PullRequestReviewComment {
   author: Actor
   body: String!
+  url: String!
   createdAt: DateTime!
 }
 
 type IssueComment {
   author: Actor
   body: String!
+  url: String!
   createdAt: DateTime!
 }
 

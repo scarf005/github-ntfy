@@ -37,6 +37,7 @@ query PullRequestEnrichment($owner: String!, $name: String!, $number: Int!) {
               login
             }
             body
+            url
             createdAt
           }
           ... on ReviewRequestedEvent {
@@ -193,6 +194,7 @@ fragment ReviewFields on PullRequestReview {
         login
       }
       body
+      url
       createdAt
     }
   }

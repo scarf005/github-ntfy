@@ -11,6 +11,6 @@ pub use model::{
 
 #[cfg(test)]
 pub use model::{
-    DismissedReview, Label, Owner, Repository, Subject, Team, TimelineSource,
-    TimelineSourceIssue, TimelineSourcePullRequest, User,
+    DismissedReview, Label, Owner, Repository, Subject, Team, TimelineSource, TimelineSourceIssue,
+    TimelineSourcePullRequest, User,
 };
