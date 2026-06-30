@@ -20,10 +20,10 @@ impl NotificationIntent {
         has_existing_notification: bool,
     ) -> Self {
         let timeline = anchor_timeline(thread, timeline.unwrap_or_default());
-        let has_activity = TimelineActivity::from_timeline(&timeline).is_some();
+        let activity = TimelineActivity::from_timeline(&timeline);
         let kind = if is_issue_or_pull_request(thread)
             && !has_existing_notification
-            && (!has_activity || latest_comment_points_to_subject(thread))
+            && should_render_initial_subject(thread, activity.as_ref())
         {
             NotificationIntentKind::InitialSubject
         } else {
@@ -69,6 +69,15 @@ fn is_issue_or_pull_request(thread: &Thread) -> bool {
         thread.subject.kind.as_deref(),
         Some("PullRequest" | "Issue")
     )
+}
+
+fn should_render_initial_subject(thread: &Thread, activity: Option<&TimelineActivity>) -> bool {
+    match activity {
+        None => true,
+        Some(activity) => {
+            latest_comment_points_to_subject(thread) && activity.kind.as_str() == "committed"
+        }
+    }
 }
 
 fn anchor_timeline(thread: &Thread, timeline: Vec<TimelineEvent>) -> Vec<TimelineEvent> {
