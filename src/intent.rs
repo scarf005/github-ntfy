@@ -154,7 +154,10 @@ fn latest_comment_html_alias(thread: &Thread, latest_comment_url: &str) -> Optio
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::github::{Label, Repository, Subject, User};
+    use crate::github::{
+        Label, Repository, Subject, TimelineSource, TimelineSourceIssue, TimelineSourcePullRequest,
+        User,
+    };
 
     fn thread(kind: &str) -> Thread {
         Thread {
@@ -242,6 +245,54 @@ mod tests {
 
         assert_eq!(intent.kind(), NotificationIntentKind::InitialSubject);
         assert!(intent.timeline().is_none());
+    }
+
+    #[test]
+    fn classifies_closed_via_subject_anchor_as_activity() {
+        let mut thread = thread("Issue");
+        thread.reason = Some(String::from("subscribed"));
+        thread.updated_at = String::from("2026-06-30T06:58:08Z");
+        thread.subject.latest_comment_url = thread.subject.url.clone();
+        let intent = NotificationIntent::classify(
+            &thread,
+            Some(vec![
+                TimelineEvent {
+                    event: Some(String::from("cross-referenced")),
+                    actor: Some(User {
+                        login: String::from("dedmemdev"),
+                        kind: None,
+                    }),
+                    created_at: Some(String::from("2026-06-30T06:11:18Z")),
+                    source: Some(TimelineSource {
+                        issue: Some(TimelineSourceIssue {
+                            number: 9741,
+                            title: String::from("feat(balance): diversify skeleton evolution tree"),
+                            html_url: String::from(
+                                "https://github.com/cataclysmbn/Cataclysm-BN/pull/9741",
+                            ),
+                            pull_request: Some(TimelineSourcePullRequest {
+                                merged_at: Some(String::from("2026-06-30T06:57:46Z")),
+                            }),
+                        }),
+                    }),
+                    ..TimelineEvent::default()
+                },
+                TimelineEvent {
+                    event: Some(String::from("closed")),
+                    actor: Some(User {
+                        login: String::from("chaosvolt"),
+                        kind: None,
+                    }),
+                    created_at: Some(String::from("2026-06-30T06:57:47Z")),
+                    ..TimelineEvent::default()
+                },
+            ]),
+            false,
+        );
+
+        assert_eq!(intent.kind(), NotificationIntentKind::Activity);
+        let activity = TimelineActivity::from_timeline(intent.timeline().unwrap()).unwrap();
+        assert_eq!(activity.kind, "closed_via_pull_request");
     }
 
     #[test]
