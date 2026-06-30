@@ -291,7 +291,7 @@ pub fn timeline_url(subject_url: &str) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::github::{Team, User};
+    use crate::github::{Team, TimelineSource, TimelineSourceIssue, TimelineSourcePullRequest, User};
 
     fn user(login: &str, kind: Option<&str>) -> User {
         User {
@@ -303,23 +303,10 @@ mod tests {
     fn committed_event(actor: &str, message: &str, created_at: &str) -> TimelineEvent {
         TimelineEvent {
             event: Some(String::from("committed")),
-            actor: None,
-            user: None,
             author: Some(user(actor, None)),
-            committer: None,
-            assignee: None,
-            review_requester: None,
-            requested_reviewer: None,
-            requested_team: None,
-            label: None,
-            dismissed_review: None,
-            body: None,
             message: Some(String::from(message)),
-            commit: None,
-            state: None,
             created_at: Some(String::from(created_at)),
-            updated_at: None,
-            submitted_at: None,
+            ..TimelineEvent::default()
         }
     }
 
@@ -344,24 +331,12 @@ mod tests {
         let timeline = vec![TimelineEvent {
             event: Some(String::from("review_requested")),
             actor: Some(user("actor", None)),
-            user: None,
-            author: None,
-            committer: None,
-            assignee: None,
             review_requester: Some(user("carol", None)),
-            requested_reviewer: None,
             requested_team: Some(Team {
                 slug: String::from("backend"),
             }),
-            label: None,
-            dismissed_review: None,
-            body: None,
-            message: None,
-            commit: None,
-            state: None,
             created_at: Some(String::from("2026-03-24T00:00:00Z")),
-            updated_at: None,
-            submitted_at: None,
+            ..TimelineEvent::default()
         }];
 
         let activity = TimelineActivity::from_timeline(&timeline).expect("activity");
@@ -377,42 +352,15 @@ mod tests {
             TimelineEvent {
                 event: Some(String::from("commented")),
                 actor: Some(user("alice", None)),
-                user: None,
-                author: None,
-                committer: None,
-                assignee: None,
-                review_requester: None,
-                requested_reviewer: None,
-                requested_team: None,
-                label: None,
-                dismissed_review: None,
                 body: Some(String::from("Fixed by #42.")),
-                message: None,
-                commit: None,
-                state: None,
                 created_at: Some(String::from("2026-03-24T00:00:00Z")),
-                updated_at: None,
-                submitted_at: None,
+                ..TimelineEvent::default()
             },
             TimelineEvent {
                 event: Some(String::from("closed")),
                 actor: Some(user("alice", None)),
-                user: None,
-                author: None,
-                committer: None,
-                assignee: None,
-                review_requester: None,
-                requested_reviewer: None,
-                requested_team: None,
-                label: None,
-                dismissed_review: None,
-                body: None,
-                message: None,
-                commit: None,
-                state: None,
                 created_at: Some(String::from("2026-03-24T00:01:00Z")),
-                updated_at: None,
-                submitted_at: None,
+                ..TimelineEvent::default()
             },
         ];
 
@@ -421,6 +369,40 @@ mod tests {
         assert_eq!(activity.kind, "closed");
         assert_eq!(activity.actor, "alice");
         assert_eq!(activity.detail.as_deref(), Some("Fixed by #42."));
+    }
+
+    #[test]
+    fn identifies_issue_closed_via_pull_request() {
+        let timeline = vec![
+            TimelineEvent {
+                event: Some(String::from("cross-referenced")),
+                actor: Some(user("Worom", None)),
+                created_at: Some(String::from("2026-06-29T00:55:13Z")),
+                source: Some(TimelineSource {
+                    issue: Some(TimelineSourceIssue {
+                        number: 9716,
+                        title: String::from("fix: prevent freeze on EMP explosion"),
+                        html_url: String::from("https://github.com/cataclysmbn/Cataclysm-BN/pull/9716"),
+                        pull_request: Some(TimelineSourcePullRequest {
+                            merged_at: Some(String::from("2026-06-30T04:13:45Z")),
+                        }),
+                    }),
+                }),
+                ..TimelineEvent::default()
+            },
+            TimelineEvent {
+                event: Some(String::from("closed")),
+                actor: Some(user("chaosvolt", None)),
+                created_at: Some(String::from("2026-06-30T04:13:46Z")),
+                ..TimelineEvent::default()
+            },
+        ];
+
+        let activity = TimelineActivity::from_timeline(&timeline).expect("activity");
+
+        assert_eq!(activity.kind, "closed_via_pull_request");
+        assert_eq!(activity.actor, "chaosvolt");
+        assert_eq!(activity.detail.as_deref(), Some("#9716 (fix: prevent freeze on EMP explosion)"));
     }
 
     #[test]

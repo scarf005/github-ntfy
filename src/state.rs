@@ -326,7 +326,7 @@ mod tests {
     }
 
     #[test]
-    fn merges_new_notification_blocks_newest_first() {
+    fn replaces_existing_notification_with_latest_block() {
         let mut state = State::default();
         state.remember_notification(
             String::from("github-thread-1"),
@@ -338,15 +338,8 @@ mod tests {
 
         assert!(merged.had_existing);
         assert!(merged.inserted_new_block);
-        assert_eq!(
-            merged.blocks,
-            vec![
-                String::from("newest"),
-                String::from("older"),
-                String::from("oldest")
-            ]
-        );
-        assert_eq!(merged.message(), "newest\nolder\noldest");
+        assert_eq!(merged.blocks, vec![String::from("newest")]);
+        assert_eq!(merged.message(), "newest");
     }
 
     #[test]
@@ -362,9 +355,6 @@ mod tests {
 
         assert!(merged.had_existing);
         assert!(!merged.inserted_new_block);
-        assert_eq!(
-            merged.blocks,
-            vec![String::from("same"), String::from("older")]
-        );
+        assert_eq!(merged.blocks, vec![String::from("same")]);
     }
 }

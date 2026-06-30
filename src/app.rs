@@ -407,6 +407,9 @@ mod tests {
                 url: Some(String::from(
                     "https://api.github.com/repos/cataclysmbn/Cataclysm-BN/pulls/9719",
                 )),
+                latest_comment_url: Some(String::from(
+                    "https://api.github.com/repos/cataclysmbn/Cataclysm-BN/pulls/9719",
+                )),
             },
         }
     }

@@ -10,4 +10,7 @@ pub use model::{
 };
 
 #[cfg(test)]
-pub use model::{DismissedReview, Label, Owner, Repository, Subject, Team, User};
+pub use model::{
+    DismissedReview, Label, Owner, Repository, Subject, Team, TimelineSource,
+    TimelineSourceIssue, TimelineSourcePullRequest, User,
+};

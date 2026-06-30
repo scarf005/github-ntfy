@@ -443,7 +443,7 @@ mod tests {
     use super::*;
     use crate::github::{
         DismissedReview, Label, Owner, PullRequestDetails, Repository, Subject, Thread,
-        TimelineEvent, User,
+        TimelineEvent, TimelineSource, TimelineSourceIssue, TimelineSourcePullRequest, User,
     };
 
     fn sample_thread() -> Thread {
@@ -465,6 +465,9 @@ mod tests {
                 title: Some(String::from("Fix pull link")),
                 kind: Some(String::from("PullRequest")),
                 url: Some(String::from(
+                    "https://api.github.com/repos/octo/repo/pulls/42",
+                )),
+                latest_comment_url: Some(String::from(
                     "https://api.github.com/repos/octo/repo/pulls/42",
                 )),
             },
@@ -506,6 +509,9 @@ mod tests {
                 title: Some(String::from("Issue title")),
                 kind: Some(String::from("Issue")),
                 url: Some(String::from(
+                    "https://api.github.com/repos/octo/repo/issues/7",
+                )),
+                latest_comment_url: Some(String::from(
                     "https://api.github.com/repos/octo/repo/issues/7",
                 )),
             },
@@ -793,6 +799,42 @@ mod tests {
         assert_eq!(
             rendered.message,
             "@bar closed: Closing because this was fixed."
+        );
+    }
+
+    #[test]
+    fn renders_issue_closed_via_pull_request() {
+        let thread = sample_issue_thread();
+        let timeline = vec![
+            TimelineEvent {
+                event: Some(String::from("cross-referenced")),
+                actor: Some(user("Worom")),
+                created_at: Some(String::from("2026-06-29T00:55:13Z")),
+                source: Some(TimelineSource {
+                    issue: Some(TimelineSourceIssue {
+                        number: 9716,
+                        title: String::from("fix: prevent freeze on EMP explosion"),
+                        html_url: String::from("https://github.com/cataclysmbn/Cataclysm-BN/pull/9716"),
+                        pull_request: Some(TimelineSourcePullRequest {
+                            merged_at: Some(String::from("2026-06-30T04:13:45Z")),
+                        }),
+                    }),
+                }),
+                ..TimelineEvent::default()
+            },
+            TimelineEvent {
+                event: Some(String::from("closed")),
+                actor: Some(user("chaosvolt")),
+                created_at: Some(String::from("2026-06-30T04:13:46Z")),
+                ..TimelineEvent::default()
+            },
+        ];
+
+        let rendered = render_notification(&thread, None, Some(&timeline)).expect("rendered");
+
+        assert_eq!(
+            rendered.message,
+            "@chaosvolt closed via #9716 (fix: prevent freeze on EMP explosion)"
         );
     }
 

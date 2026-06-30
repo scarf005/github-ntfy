@@ -91,7 +91,23 @@ mod tests {
                 url: Some(String::from(
                     "https://api.github.com/repos/scarf005/Overhaul/issues/1",
                 )),
+                latest_comment_url: Some(String::from(
+                    "https://api.github.com/repos/scarf005/Overhaul/issues/1",
+                )),
             },
+        }
+    }
+
+    fn commit_event() -> TimelineEvent {
+        TimelineEvent {
+            event: Some(String::from("committed")),
+            author: Some(User {
+                login: String::from("RoyalFox2140"),
+                kind: None,
+            }),
+            message: Some(String::from("Update modinfo.json lethal_zeds")),
+            created_at: Some(String::from("2026-06-29T10:46:09Z")),
+            ..TimelineEvent::default()
         }
     }
 
@@ -113,6 +129,14 @@ mod tests {
     #[test]
     fn classifies_first_issue_without_activity_as_initial_subject() {
         let intent = NotificationIntent::classify(&thread("Issue"), Some(Vec::new()), false);
+
+        assert_eq!(intent.kind(), NotificationIntentKind::InitialSubject);
+        assert!(intent.timeline().is_none());
+    }
+
+    #[test]
+    fn classifies_first_subject_with_only_subject_anchor_as_initial_subject() {
+        let intent = NotificationIntent::classify(&thread("PullRequest"), Some(vec![commit_event()]), false);
 
         assert_eq!(intent.kind(), NotificationIntentKind::InitialSubject);
         assert!(intent.timeline().is_none());

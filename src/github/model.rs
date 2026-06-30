@@ -42,6 +42,7 @@ pub struct Subject {
     #[serde(rename = "type")]
     pub kind: Option<String>,
     pub url: Option<String>,
+    pub latest_comment_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -62,6 +63,7 @@ pub struct SubjectDetails {
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct TimelineEvent {
     pub event: Option<String>,
+    pub url: Option<String>,
     pub actor: Option<User>,
     pub user: Option<User>,
     pub author: Option<User>,
@@ -79,6 +81,25 @@ pub struct TimelineEvent {
     pub created_at: Option<String>,
     pub updated_at: Option<String>,
     pub submitted_at: Option<String>,
+    pub source: Option<TimelineSource>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct TimelineSource {
+    pub issue: Option<TimelineSourceIssue>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct TimelineSourceIssue {
+    pub number: u64,
+    pub title: String,
+    pub html_url: String,
+    pub pull_request: Option<TimelineSourcePullRequest>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct TimelineSourcePullRequest {
+    pub merged_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
