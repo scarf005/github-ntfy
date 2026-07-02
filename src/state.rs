@@ -6,7 +6,9 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
 const MAX_MERGED_MESSAGES: usize = 4;
-const MERGED_MESSAGE_SEPARATOR: &str = "\n\n---\n\n";
+const MAX_MERGED_MESSAGE_BYTES: usize = 3900;
+const MERGED_MESSAGE_SEPARATOR: &str = "\n";
+const TRUNCATION_SUFFIX: &str = "…";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NotificationMerge {
@@ -110,29 +112,38 @@ impl State {
         sequence_id: &str,
         incoming_message: &str,
     ) -> NotificationMerge {
-        let incoming_message = incoming_message.trim();
+        let incoming_message = truncate_to_bytes(incoming_message.trim());
         let Some(existing) = self.notification_index.get(sequence_id) else {
             return NotificationMerge {
-                blocks: vec![String::from(incoming_message)],
+                blocks: fit_notification_blocks(vec![incoming_message]),
                 had_existing: false,
                 inserted_new_block: true,
             };
         };
 
-        if existing.iter().any(|block| block == incoming_message) {
+        if existing
+            .first()
+            .is_some_and(|block| block == &incoming_message)
+        {
             return NotificationMerge {
-                blocks: existing.clone(),
+                blocks: fit_notification_blocks(existing.clone()),
                 had_existing: true,
                 inserted_new_block: false,
             };
         }
 
         let mut blocks = Vec::with_capacity((existing.len() + 1).min(MAX_MERGED_MESSAGES));
-        blocks.push(String::from(incoming_message));
-        blocks.extend(existing.iter().take(MAX_MERGED_MESSAGES - 1).cloned());
+        blocks.push(incoming_message.clone());
+        blocks.extend(
+            existing
+                .iter()
+                .filter(|block| *block != &incoming_message)
+                .take(MAX_MERGED_MESSAGES - 1)
+                .cloned(),
+        );
 
         NotificationMerge {
-            blocks,
+            blocks: fit_notification_blocks(blocks),
             had_existing: true,
             inserted_new_block: true,
         }
@@ -225,6 +236,72 @@ impl State {
 fn rebuild_string_index(queue: &mut VecDeque<String>, index: &mut HashSet<String>) {
     *index = HashSet::with_capacity(queue.len());
     queue.retain(|value| index.insert(value.clone()));
+}
+
+fn fit_notification_blocks(blocks: Vec<String>) -> Vec<String> {
+    let mut fitted = Vec::with_capacity(blocks.len().min(MAX_MERGED_MESSAGES));
+    let mut omitted_count = 0usize;
+
+    for block in blocks.into_iter().map(|block| truncate_to_bytes(&block)) {
+        if message_len_with(&fitted, &block) <= MAX_MERGED_MESSAGE_BYTES {
+            fitted.push(block);
+        } else {
+            omitted_count += 1;
+        }
+    }
+
+    if omitted_count > 0 {
+        append_omitted_history_marker(&mut fitted, omitted_count);
+    }
+
+    fitted
+}
+
+fn append_omitted_history_marker(blocks: &mut Vec<String>, omitted_count: usize) {
+    let marker = format!(
+        "[{omitted_count} older update{} omitted]",
+        if omitted_count == 1 { "" } else { "s" }
+    );
+
+    while blocks.len() > 1 && message_len_with(blocks, &marker) > MAX_MERGED_MESSAGE_BYTES {
+        blocks.pop();
+    }
+
+    if message_len_with(blocks, &marker) <= MAX_MERGED_MESSAGE_BYTES {
+        blocks.push(marker);
+    }
+}
+
+fn message_len_with(blocks: &[String], block: &str) -> usize {
+    let separator_len = if blocks.is_empty() {
+        0
+    } else {
+        MERGED_MESSAGE_SEPARATOR.len()
+    };
+    NotificationMerge {
+        blocks: blocks.to_vec(),
+        had_existing: false,
+        inserted_new_block: false,
+    }
+    .message()
+    .len()
+        + separator_len
+        + block.len()
+}
+
+fn truncate_to_bytes(text: &str) -> String {
+    if text.len() <= MAX_MERGED_MESSAGE_BYTES {
+        return String::from(text);
+    }
+
+    let limit = MAX_MERGED_MESSAGE_BYTES.saturating_sub(TRUNCATION_SUFFIX.len());
+    let end = text
+        .char_indices()
+        .map(|(index, character)| index + character.len_utf8())
+        .take_while(|end| *end <= limit)
+        .last()
+        .unwrap_or(0);
+    format!("{}{}", &text[..end], TRUNCATION_SUFFIX)
 }
 
 #[cfg(test)]
@@ -347,7 +424,7 @@ mod tests {
                 String::from("oldest")
             ]
         );
-        assert_eq!(merged.message(), "newest\n\n---\n\nolder\n\n---\n\noldest");
+        assert_eq!(merged.message(), "newest\nolder\noldest");
     }
 
     #[test]
@@ -370,6 +447,16 @@ mod tests {
     }
 
     #[test]
+    fn keeps_initial_notification_body_under_ntfy_inline_limit() {
+        let state = State::default();
+
+        let merged = state.merge_notification("github-thread-1", &"🦀".repeat(2000));
+
+        assert!(!merged.had_existing);
+        assert!(merged.message().len() <= 4096);
+    }
+
+    #[test]
     fn keeps_merged_notification_body_under_ntfy_inline_limit() {
         let mut state = State::default();
         state.remember_notification(
@@ -381,6 +468,19 @@ mod tests {
         let merged = state.merge_notification("github-thread-1", &"newest".repeat(1000));
 
         assert!(merged.message().len() <= 4096);
+    }
+
+    #[test]
+    fn skips_duplicate_truncated_latest_block() {
+        let state = State::default();
+        let original = "🦀".repeat(2000);
+        let first = state.merge_notification("github-thread-1", &original);
+        let mut state = State::default();
+        state.remember_notification(String::from("github-thread-1"), first.blocks, 10);
+
+        let repeated = state.merge_notification("github-thread-1", &original);
+
+        assert!(!repeated.inserted_new_block);
     }
 
     #[test]
