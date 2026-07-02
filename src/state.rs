@@ -351,6 +351,39 @@ mod tests {
     }
 
     #[test]
+    fn sends_repeated_message_when_it_is_not_the_latest_block() {
+        let mut state = State::default();
+        state.remember_notification(
+            String::from("github-thread-1"),
+            vec![String::from("newer"), String::from("same")],
+            10,
+        );
+
+        let merged = state.merge_notification("github-thread-1", "same");
+
+        assert!(merged.had_existing);
+        assert!(merged.inserted_new_block);
+        assert_eq!(
+            merged.blocks,
+            vec![String::from("same"), String::from("newer")]
+        );
+    }
+
+    #[test]
+    fn keeps_merged_notification_body_under_ntfy_inline_limit() {
+        let mut state = State::default();
+        state.remember_notification(
+            String::from("github-thread-1"),
+            vec!["older".repeat(1000), "oldest".repeat(1000)],
+            10,
+        );
+
+        let merged = state.merge_notification("github-thread-1", &"newest".repeat(1000));
+
+        assert!(merged.message().len() <= 4096);
+    }
+
+    #[test]
     fn skips_duplicate_notification_blocks() {
         let mut state = State::default();
         state.remember_notification(
