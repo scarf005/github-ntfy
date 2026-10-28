@@ -28,6 +28,7 @@ pub fn render_notification(
     thread: &Thread,
     pull_request: Option<&PullRequestDetails>,
     timeline: Option<&[TimelineEvent]>,
+    _viewer: Option<&str>,
 ) -> Result<RenderedNotification> {
     let base_title = notification_title(thread);
     let base_message = base_message(thread);
@@ -527,7 +528,7 @@ mod tests {
 
     #[test]
     fn renders_pull_url_from_api_url() {
-        let rendered = render_notification(&sample_thread(), None, None).expect("rendered");
+        let rendered = render_notification(&sample_thread(), None, None, None).expect("rendered");
         assert_eq!(rendered.click_url, "https://github.com/octo/repo/pull/42");
         assert_eq!(rendered.sequence_id, "https-github-com-octo-repo-pull-42");
         assert_eq!(rendered.title, "Fix pull link (#42)");
@@ -539,7 +540,7 @@ mod tests {
         let mut thread = sample_thread();
         thread.subject.title = Some(String::from("Fix pull link #42"));
 
-        let rendered = render_notification(&thread, None, None).expect("rendered");
+        let rendered = render_notification(&thread, None, None, None).expect("rendered");
 
         assert_eq!(rendered.title, "Fix pull link #42");
     }
@@ -610,7 +611,7 @@ mod tests {
             ..TimelineEvent::default()
         }];
 
-        let rendered = render_notification(&thread, None, Some(&timeline)).expect("rendered");
+        let rendered = render_notification(&thread, None, Some(&timeline), None).expect("rendered");
         assert_eq!(rendered.title, "Fix pull link (#42)");
         assert!(rendered.message.starts_with("@foo pushed 1 commit\n"));
         assert!(rendered.message.contains("feat: improve notifier"));
@@ -631,7 +632,7 @@ mod tests {
             ..event("reviewed", "chaosvolt")
         }];
 
-        let rendered = render_notification(&thread, None, Some(&timeline)).expect("rendered");
+        let rendered = render_notification(&thread, None, Some(&timeline), None).expect("rendered");
 
         assert_eq!(rendered.message, "@chaosvolt approved");
     }
@@ -646,7 +647,7 @@ mod tests {
             ..event("reviewed", "chaosvolt")
         }];
 
-        let rendered = render_notification(&thread, None, Some(&timeline)).expect("rendered");
+        let rendered = render_notification(&thread, None, Some(&timeline), None).expect("rendered");
 
         assert_eq!(
             rendered.message,
@@ -665,7 +666,7 @@ mod tests {
             ..event("review_dismissed", "chaosvolt")
         }];
 
-        let rendered = render_notification(&thread, None, Some(&timeline)).expect("rendered");
+        let rendered = render_notification(&thread, None, Some(&timeline), None).expect("rendered");
 
         assert_eq!(
             rendered.message,
@@ -683,8 +684,8 @@ mod tests {
         };
         let timeline = vec![event("closed", "someone-else")];
 
-        let rendered =
-            render_notification(&thread, Some(&pull_request), Some(&timeline)).expect("rendered");
+        let rendered = render_notification(&thread, Some(&pull_request), Some(&timeline), None)
+            .expect("rendered");
 
         assert_eq!(rendered.message, "@chaosvolt merged");
     }
@@ -699,7 +700,7 @@ mod tests {
             ..event("commented", "narkiel")
         }];
 
-        let rendered = render_notification(&thread, None, Some(&timeline)).expect("rendered");
+        let rendered = render_notification(&thread, None, Some(&timeline), None).expect("rendered");
 
         assert_eq!(
             rendered.message,
@@ -721,8 +722,8 @@ mod tests {
             ..event("commented", "Worom")
         }];
 
-        let rendered =
-            render_notification(&thread, Some(&pull_request), Some(&timeline)).expect("rendered");
+        let rendered = render_notification(&thread, Some(&pull_request), Some(&timeline), None)
+            .expect("rendered");
 
         assert_eq!(
             rendered.message,
@@ -739,10 +740,62 @@ mod tests {
             ..event("commented", "dedmemdev")
         }];
 
-        let rendered = render_notification(&thread, None, Some(&timeline)).expect("rendered");
+        let rendered = render_notification(&thread, None, Some(&timeline), None).expect("rendered");
 
         assert!(rendered.message.starts_with("@dedmemdev mentioned you\n"));
         assert!(!rendered.message.contains("Fix pull link"));
+    }
+
+    #[test]
+    fn renders_viewer_comment_on_mention_thread_as_comment() {
+        let mut thread = sample_thread();
+        thread.reason = Some(String::from("mention"));
+        let timeline = vec![TimelineEvent {
+            body: Some(String::from("Thanks, fixed in the latest push")),
+            ..event("commented", "scarf005")
+        }];
+
+        let rendered = render_notification(&thread, None, Some(&timeline), Some("Scarf005"))
+            .expect("rendered");
+
+        assert_eq!(
+            rendered.message,
+            "@scarf005: Thanks, fixed in the latest push"
+        );
+    }
+
+    #[test]
+    fn renders_comment_without_viewer_handle_on_mention_thread_as_comment() {
+        let mut thread = sample_issue_thread();
+        thread.reason = Some(String::from("mention"));
+        let timeline = vec![TimelineEvent {
+            body: Some(String::from("cc @scarf005-bot")),
+            ..event("commented", "bar")
+        }];
+
+        let rendered = render_notification(&thread, None, Some(&timeline), Some("scarf005"))
+            .expect("rendered");
+
+        assert_eq!(rendered.message, "@bar: cc @scarf005-bot");
+    }
+
+    #[test]
+    fn renders_comment_with_viewer_handle_as_mention() {
+        let mut thread = sample_issue_thread();
+        thread.reason = Some(String::from("mention"));
+        let timeline = vec![TimelineEvent {
+            body: Some(String::from("ping @Scarf005, please check")),
+            ..event("commented", "bar")
+        }];
+
+        let rendered = render_notification(&thread, None, Some(&timeline), Some("scarf005"))
+            .expect("rendered");
+
+        assert!(
+            rendered
+                .message
+                .starts_with("@bar mentioned you in Issue title\n")
+        );
     }
 
     #[test]
@@ -754,7 +807,7 @@ mod tests {
             ..event("commented", "bar")
         }];
 
-        let rendered = render_notification(&thread, None, Some(&timeline)).expect("rendered");
+        let rendered = render_notification(&thread, None, Some(&timeline), None).expect("rendered");
         assert_eq!(rendered.title, "Issue title (#7)");
         assert!(
             rendered
@@ -779,7 +832,7 @@ mod tests {
             ..event("commented", "narkiel")
         }];
 
-        let rendered = render_notification(&thread, None, Some(&timeline)).expect("rendered");
+        let rendered = render_notification(&thread, None, Some(&timeline), None).expect("rendered");
 
         assert_eq!(
             rendered.message,
@@ -801,7 +854,7 @@ mod tests {
             },
         ];
 
-        let rendered = render_notification(&thread, None, Some(&timeline)).expect("rendered");
+        let rendered = render_notification(&thread, None, Some(&timeline), None).expect("rendered");
 
         assert_eq!(
             rendered.message,
@@ -839,7 +892,7 @@ mod tests {
             },
         ];
 
-        let rendered = render_notification(&thread, None, Some(&timeline)).expect("rendered");
+        let rendered = render_notification(&thread, None, Some(&timeline), None).expect("rendered");
 
         assert_eq!(
             rendered.message,
@@ -852,7 +905,7 @@ mod tests {
         let thread = sample_issue_thread();
         let timeline = vec![event("closed", "bar")];
 
-        let rendered = render_notification(&thread, None, Some(&timeline)).expect("rendered");
+        let rendered = render_notification(&thread, None, Some(&timeline), None).expect("rendered");
         assert_eq!(rendered.title, "Issue title (#7)");
         assert_eq!(rendered.message, "@bar closed Issue title");
     }
@@ -871,7 +924,7 @@ mod tests {
             },
         ];
 
-        let rendered = render_notification(&thread, None, Some(&timeline)).expect("rendered");
+        let rendered = render_notification(&thread, None, Some(&timeline), None).expect("rendered");
 
         assert_eq!(
             rendered.message,
@@ -889,7 +942,7 @@ mod tests {
             ..event("labeled", "bar")
         }];
 
-        let rendered = render_notification(&thread, None, Some(&timeline)).expect("rendered");
+        let rendered = render_notification(&thread, None, Some(&timeline), None).expect("rendered");
         assert_eq!(rendered.title, "Issue title (#7)");
         assert!(rendered.message.starts_with("@bar labeled Issue title\n"));
         assert!(rendered.message.contains("Added label: bug"));

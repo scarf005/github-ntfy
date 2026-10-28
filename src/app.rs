@@ -273,7 +273,7 @@ impl App {
     ) -> Result<RenderedNotification> {
         match intent.kind() {
             NotificationIntentKind::Activity => {
-                render_notification(thread, pull_request, intent.timeline())
+                render_notification(thread, pull_request, intent.timeline(), None)
             }
             NotificationIntentKind::InitialSubject => {
                 let body = self.initial_subject_body(thread, pull_request).await;
