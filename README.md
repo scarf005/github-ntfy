@@ -27,9 +27,9 @@ cargo run -- run --config ./config.example.toml
 
 ## Docs
 
-- `cargo doc --no-deps` builds local API docs
-- GitHub Pages publishes rustdoc from `.github/workflows/rustdoc-pages.yml`
-- After deployment, the docs site lives at `https://scarf005.github.io/github-ntfy/`
+- User guide (English, 한국어): <https://scarf005.github.io/github-ntfy/>, source in `docs/`, build with `mdbook build docs`
+- API docs: <https://scarf005.github.io/github-ntfy/api/github_ntfy_agent/>, build with `cargo doc --no-deps`
+- `.github/workflows/docs-pages.yml` publishes both
 
 Config:
 

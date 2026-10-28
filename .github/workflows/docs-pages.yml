@@ -1,4 +1,4 @@
-name: rustdoc-pages
+name: docs-pages
 
 on:
   push:
@@ -21,26 +21,15 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with: { tool: mdbook@0.5.4 }
       - run: cargo doc --locked --no-deps
-      - run: |
-          cat > target/doc/index.html <<'EOF'
-          <!doctype html>
-          <html lang="en">
-          <head>
-            <meta charset="utf-8">
-            <meta http-equiv="refresh" content="0; url=github_ntfy_agent/index.html">
-            <title>github-ntfy docs</title>
-            <link rel="canonical" href="github_ntfy_agent/index.html">
-          </head>
-          <body>
-            <a href="github_ntfy_agent/index.html">github-ntfy docs</a>
-          </body>
-          </html>
-          EOF
+      - run: mdbook build docs
+      - run: cp -r target/doc docs/book/api
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:
-          path: target/doc
+          path: docs/book
 
   deploy:
     needs: build

@@ -1,0 +1,8 @@
+[book]
+title = "github-ntfy"
+authors = ["scarf005"]
+language = "en"
+src = "src"
+
+[output.html]
+git-repository-url = "https://github.com/scarf005/github-ntfy"
