@@ -28,17 +28,22 @@ pub fn render_notification(
     thread: &Thread,
     pull_request: Option<&PullRequestDetails>,
     timeline: Option<&[TimelineEvent]>,
-    _viewer: Option<&str>,
+    viewer: Option<&str>,
 ) -> Result<RenderedNotification> {
     let base_title = notification_title(thread);
     let base_message = base_message(thread);
     let reason = thread.reason.as_deref().unwrap_or("notification");
 
     let (title, message) = match thread.subject.kind.as_deref() {
-        Some("PullRequest") => {
-            enrich_pull_request(&base_title, &base_message, reason, pull_request, timeline)
-        }
-        Some("Issue") => enrich_issue(&base_title, &base_message, reason, timeline),
+        Some("PullRequest") => enrich_pull_request(
+            &base_title,
+            &base_message,
+            reason,
+            viewer,
+            pull_request,
+            timeline,
+        ),
+        Some("Issue") => enrich_issue(&base_title, &base_message, reason, viewer, timeline),
         _ => (base_title, base_message),
     };
 
@@ -97,6 +102,7 @@ fn enrich_pull_request(
     base_title: &str,
     base_message: &str,
     reason: &str,
+    viewer: Option<&str>,
     pull_request: Option<&PullRequestDetails>,
     timeline: Option<&[TimelineEvent]>,
 ) -> (String, String) {
@@ -107,6 +113,7 @@ fn enrich_pull_request(
         return (String::from(base_title), String::from(base_message));
     };
 
+    let mentioned = mentions_viewer(reason, &activity, viewer);
     let is_merged = pull_request.is_some_and(|pull| pull.merged);
     let actor = pull_request_actor(pull_request, &activity);
 
@@ -114,9 +121,7 @@ fn enrich_pull_request(
         "review_approved" => format!("@{} approved", actor),
         "review_changes_requested" => format!("@{} requested changes", actor),
         "reviewed" => format!("@{} reviewed", actor),
-        "commented" if reason == "mention" || reason == "team_mention" => {
-            format!("@{} mentioned you", actor)
-        }
+        "commented" if mentioned => format!("@{} mentioned you", actor),
         "commented" => format!("@{} commented", actor),
         "committed" => format!(
             "@{} pushed {} {}",
@@ -136,8 +141,7 @@ fn enrich_pull_request(
         _ => String::from("Updated"),
     };
 
-    let message = if activity.kind == "commented" && reason != "mention" && reason != "team_mention"
-    {
+    let message = if activity.kind == "commented" && !mentioned {
         format_comment_message(&actor, activity.detail.as_deref(), &summary)
     } else if activity.kind == "closed" && !is_merged {
         format_closed_message(&actor, activity.detail.as_deref(), &summary)
@@ -169,6 +173,7 @@ fn enrich_issue(
     base_title: &str,
     base_message: &str,
     reason: &str,
+    viewer: Option<&str>,
     timeline: Option<&[TimelineEvent]>,
 ) -> (String, String) {
     let Some(timeline) = timeline else {
@@ -178,8 +183,9 @@ fn enrich_issue(
         return (String::from(base_title), String::from(base_message));
     };
 
+    let mentioned = mentions_viewer(reason, &activity, viewer);
     let summary = match activity.kind.as_str() {
-        "commented" if reason == "mention" || reason == "team_mention" => {
+        "commented" if mentioned => {
             format!("@{} mentioned you in {}", activity.actor, base_title)
         }
         "commented" => format!("@{} commented on {}", activity.actor, base_title),
@@ -197,8 +203,7 @@ fn enrich_issue(
         _ => String::from(base_title),
     };
 
-    let message = if activity.kind == "commented" && reason != "mention" && reason != "team_mention"
-    {
+    let message = if activity.kind == "commented" && !mentioned {
         format_comment_message(&activity.actor, activity.detail.as_deref(), &summary)
     } else if activity.kind == "closed" {
         format_closed_message(&activity.actor, activity.detail.as_deref(), &summary)
@@ -209,6 +214,29 @@ fn enrich_issue(
     };
 
     (String::from(base_title), message)
+}
+
+fn mentions_viewer(reason: &str, activity: &TimelineActivity, viewer: Option<&str>) -> bool {
+    match (reason, viewer) {
+        ("mention" | "team_mention", None) => true,
+        (_, Some(viewer)) if activity.actor.eq_ignore_ascii_case(viewer) => false,
+        ("mention", Some(viewer)) => activity
+            .detail
+            .as_deref()
+            .is_none_or(|body| mentions_handle(body, viewer)),
+        ("team_mention", Some(_)) => true,
+        _ => false,
+    }
+}
+
+fn mentions_handle(body: &str, login: &str) -> bool {
+    let body = body.to_ascii_lowercase();
+    let handle = format!("@{}", login.to_ascii_lowercase());
+    body.match_indices(&handle).any(|(start, _)| {
+        let is_login_char = |c: char| c.is_ascii_alphanumeric() || c == '-';
+        !body[..start].ends_with(is_login_char)
+            && !body[start + handle.len()..].starts_with(is_login_char)
+    })
 }
 
 fn format_comment_message(actor: &str, detail: Option<&str>, fallback: &str) -> String {

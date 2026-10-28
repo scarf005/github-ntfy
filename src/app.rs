@@ -22,6 +22,7 @@ pub struct App {
     loaded: LoadedConfig,
     github: GitHubClient,
     ntfy: NtfyClient,
+    viewer: Option<String>,
 }
 
 impl App {
@@ -29,17 +30,25 @@ impl App {
         let github = GitHubClient::new(&loaded.config.github)?;
         let ntfy = NtfyClient::new(&loaded.config.ntfy)?;
 
-        if loaded.config.github.token.is_none() {
-            let login = github.current_user().await?;
-            if let Some(login) = login {
-                info!(github_login = %login, "using current gh auth session");
+        let viewer = match github.current_user().await {
+            Ok(viewer) => viewer,
+            Err(error) if loaded.config.github.token.is_some() => {
+                warn!(error = %error, "failed to resolve GitHub login");
+                None
             }
+            Err(error) => return Err(error),
+        };
+        if loaded.config.github.token.is_none()
+            && let Some(login) = &viewer
+        {
+            info!(github_login = %login, "using current gh auth session");
         }
 
         Ok(Self {
             loaded,
             github,
             ntfy,
+            viewer,
         })
     }
 
@@ -272,9 +281,12 @@ impl App {
         intent: &NotificationIntent,
     ) -> Result<RenderedNotification> {
         match intent.kind() {
-            NotificationIntentKind::Activity => {
-                render_notification(thread, pull_request, intent.timeline(), None)
-            }
+            NotificationIntentKind::Activity => render_notification(
+                thread,
+                pull_request,
+                intent.timeline(),
+                self.viewer.as_deref(),
+            ),
             NotificationIntentKind::InitialSubject => {
                 let body = self.initial_subject_body(thread, pull_request).await;
                 render_initial_subject_notification(thread, body.as_deref())
