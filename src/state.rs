@@ -243,7 +243,9 @@ fn fit_notification_blocks(blocks: Vec<String>) -> Vec<String> {
     let mut omitted_count = 0usize;
 
     for block in blocks.into_iter().map(|block| truncate_to_bytes(&block)) {
-        if message_len_with(&fitted, &block) <= MAX_MERGED_MESSAGE_BYTES {
+        if let Some(count) = omitted_marker_count(&block) {
+            omitted_count += count;
+        } else if message_len_with(&fitted, &block) <= MAX_MERGED_MESSAGE_BYTES {
             fitted.push(block);
         } else {
             omitted_count += 1;
@@ -270,6 +272,15 @@ fn append_omitted_history_marker(blocks: &mut Vec<String>, omitted_count: usize)
     if message_len_with(blocks, &marker) <= MAX_MERGED_MESSAGE_BYTES {
         blocks.push(marker);
     }
+}
+
+fn omitted_marker_count(block: &str) -> Option<usize> {
+    let count = block.strip_prefix('[')?.strip_suffix(" omitted]")?;
+    count
+        .strip_suffix(" older updates")
+        .or_else(|| count.strip_suffix(" older update"))?
+        .parse()
+        .ok()
 }
 
 fn message_len_with(blocks: &[String], block: &str) -> usize {
