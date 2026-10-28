@@ -447,6 +447,23 @@ mod tests {
     }
 
     #[test]
+    fn folds_stored_omitted_marker_into_new_marker() {
+        let mut state = State::default();
+        state.remember_notification(
+            String::from("github-thread-1"),
+            vec!["a".repeat(2000), String::from("[1 older update omitted]")],
+            10,
+        );
+
+        let merged = state.merge_notification("github-thread-1", &"n".repeat(2000));
+
+        assert_eq!(
+            merged.blocks,
+            vec!["n".repeat(2000), String::from("[2 older updates omitted]")]
+        );
+    }
+
+    #[test]
     fn keeps_initial_notification_body_under_ntfy_inline_limit() {
         let state = State::default();
 

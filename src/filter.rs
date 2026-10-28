@@ -182,6 +182,20 @@ mod tests {
     }
 
     #[test]
+    fn matches_closed_activity_rule_for_issue_closed_via_pull_request() {
+        let filters = FiltersConfig {
+            block: vec![BlockRule {
+                activity: Some(String::from("closed")),
+                ..BlockRule::default()
+            }],
+        };
+        let mut facts = facts();
+        facts.activity = Some(String::from("closed_via_pull_request"));
+
+        assert!(matching_block_rule(&filters, &facts).is_some());
+    }
+
+    #[test]
     fn does_not_match_when_actor_is_human() {
         let filters = FiltersConfig {
             block: vec![BlockRule {

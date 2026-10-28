@@ -240,6 +240,13 @@ mod tests {
     }
 
     #[test]
+    fn classifies_thread_without_fetched_timeline_as_activity() {
+        let intent = NotificationIntent::classify(&thread("Issue"), None, false);
+
+        assert_eq!(intent.kind(), NotificationIntentKind::Activity);
+    }
+
+    #[test]
     fn classifies_first_issue_without_activity_as_initial_subject() {
         let intent = NotificationIntent::classify(&thread("Issue"), Some(Vec::new()), false);
 
