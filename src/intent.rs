@@ -19,9 +19,11 @@ impl NotificationIntent {
         timeline: Option<Vec<TimelineEvent>>,
         has_existing_notification: bool,
     ) -> Self {
+        let has_timeline = timeline.is_some();
         let timeline = anchor_timeline(thread, timeline.unwrap_or_default());
         let activity = TimelineActivity::from_timeline(&timeline);
-        let kind = if is_issue_or_pull_request(thread)
+        let kind = if has_timeline
+            && is_issue_or_pull_request(thread)
             && !has_existing_notification
             && should_render_initial_subject(thread, activity.as_ref())
         {
