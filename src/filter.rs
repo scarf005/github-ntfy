@@ -124,10 +124,11 @@ fn matches_rule(rule: &BlockRule, facts: &NotificationFacts) -> bool {
             .as_deref()
             .is_none_or(|subject_type| subject_type.eq_ignore_ascii_case(&facts.subject_type))
         && rule.activity.as_deref().is_none_or(|activity| {
-            facts
-                .activity
-                .as_deref()
-                .is_some_and(|candidate| activity.eq_ignore_ascii_case(candidate))
+            facts.activity.as_deref().is_some_and(|candidate| {
+                activity.eq_ignore_ascii_case(candidate)
+                    || activity.eq_ignore_ascii_case("closed")
+                        && candidate == "closed_via_pull_request"
+            })
         })
 }
 
